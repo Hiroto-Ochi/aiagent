@@ -1,0 +1,2375 @@
+以下のGASの内容を解析してください。
+
+＃Appsheetの内容を入力シートに転記.gs
+function appsheetToshiharaiIraisheet( seikyuTeisyutsuFileID ) {
+
+  // 請求書提出データファイルを取得
+  var ss = SpreadsheetApp.openById( seikyuTeisyutsuFileID );
+
+  // 請求書提出データファイルの設定シートから値を取得
+  var yojitsuSheet = ss.getSheetByName("予実");
+  var settingsSheet = ss.getSheetByName("設定");
+  var appSheet = ss.getSheetByName("請求提出");
+
+  var shiharaiIraiFileID_1 = settingsSheet.getRange("C16").getValue();
+  var shiharaiIraiFileID_2 = settingsSheet.getRange("C17").getValue();
+  var shiharaiIraiFileID_3 = settingsSheet.getRange("C18").getValue();
+
+  var outputSheet_1 = SpreadsheetApp.openById( shiharaiIraiFileID_1 ).getSheetByName("入力");
+  var outputSheet_2 = SpreadsheetApp.openById( shiharaiIraiFileID_2 ).getSheetByName("入力");
+  var outputSheet_3 = SpreadsheetApp.openById( shiharaiIraiFileID_3 ).getSheetByName("入力");
+  var outputSheet = [outputSheet_1,outputSheet_2,outputSheet_3];
+
+  // 月度の加工。Appsheetからの新規入力の場合月度が存在しないため、支払依頼WSの設定シートの実績反映月から月度を作成する。
+  var jissekiMonth = SpreadsheetApp.openById( shiharaiIraiFileID_1 ).getSheetByName("設定").getRange("A21").getValue();
+  if( jissekiMonth === '' ){
+    var yearMonth = '202504';
+  } else if ( jissekiMonth === 4 || jissekiMonth === 5 || jissekiMonth === 6 || jissekiMonth === 7 || jissekiMonth === 8 || jissekiMonth === 9 || jissekiMonth === '4' || jissekiMonth === '5' || jissekiMonth === '6'|| jissekiMonth === '7' || jissekiMonth === '8' || jissekiMonth === '9' ){
+    var yearMonth = '20250'+ (parseInt(jissekiMonth));
+  } else if( jissekiMonth === 10 || jissekiMonth === 11 || jissekiMonth === 12 || jissekiMonth === '10' || jissekiMonth === '11' || jissekiMonth === '12' ){
+    var yearMonth = '2025'+ (parseInt(jissekiMonth));
+  } else if( jissekiMonth === 1 || jissekiMonth === 2 || jissekiMonth === 3 || jissekiMonth === '1' || jissekiMonth === '2' || jissekiMonth === '3' ){
+    var yearMonth = '20260'+(parseInt(jissekiMonth));
+  }
+
+
+  // 設定シートからフォルダID取得
+  var seikyuTempFolderID = settingsSheet.getRange("C22").getValue();
+  // var sagyohoukokuFolderID = settingsSheet.getRange("C26").getValue();
+  var seikyuFolderID = settingsSheet.getRange("C34:C53").getValues();
+  var kanrenFolderID = settingsSheet.getRange("E34:E53").getValues();
+  var regionList = settingsSheet.getRange("A34:A53").getValues().flat();
+  var oldFolderID = settingsSheet.getRange("C30").getValues();
+  
+  // 「請求書等格納フォルダ(AppSheet連携)」フォルダからファイル情報を取得
+  var folder = DriveApp.getFolderById(seikyuTempFolderID);
+  var seikyufileObject = folder.getFiles();
+  var seikyufileObjectList = [];
+  while (seikyufileObject.hasNext()) {
+    seikyufileObjectList.push(seikyufileObject.next());
+  }
+
+
+
+//-----支払依頼ファイル毎に入力シートの行数不足チェック-----
+
+  var lastrow = []
+
+  for (var i = 0; i < outputSheet.length; i++) {
+    
+    // 入力シートの書き込み先の行を取得
+    lastrow[i] = outputSheet[i].getRange(outputSheet[i].getMaxRows(), 11).getNextDataCell(SpreadsheetApp.Direction.UP).getRow()    // 入力シートの最終行を取得（「管理表CD＋予実No（K列）」で判定）
+    if( lastrow[i] <= 8 ){
+      lastrow[i] = 8;
+    }
+
+    // 入力シートの書き込み先の行を取得
+    var bottomrow = outputSheet[i].getMaxRows();                         // 最終行を取得
+    var lastrowValue = outputSheet[i].getRange(bottomrow, 1).getValue(); // 最終行の値を取得
+
+    // 「最終行に値がセットされている＝入力シート（書き込み先）の行が足りない」と判定し、処理を終了
+    if( lastrowValue ){
+        console.log("入力シートの行が足りません。入力シートに行を追加してください。");
+      return;
+    }
+
+  }
+
+//------------------------請求提出シートのデータ取得------------------------------
+
+  // 予実シートのA2:Dデータ取得
+  var yojitsuData = yojitsuSheet.getRange("A2:D" + yojitsuSheet.getLastRow()).getValues();
+
+  var yojitsuColumnHeader = {
+
+    kanrihyoCD_yojitsuNo:  0,         // 管理表CD+予実No
+    keijoKubun:            1,         // 計上区分
+    kamoku:                2,         // 科目
+    soshiki:               3,         // 組織
+
+  }  
+
+  // 請求提出シートのデータを取得
+  var appDataAll = appSheet.getRange("A1:BI" + appSheet.getLastRow()).getValues();
+
+  var seikyuColumnHeader = {
+
+    kanrihyoCD_yojitsuNo_time:  0,         // 管理表CD+予実No+提出日時
+    kanrihyoCD_yojitsuNo:       3,         // 管理表CD+予実No
+    keijoMonth:                 4,         // 支払処理計上月
+    haccyuKessaiMeisaiNo:       5,         // 発注決裁明細No
+    // torihikisakiCD:             7,         // 取引先CD
+    // haccyugaku:                 9,         // 発注額
+    // gyoumuItakuGaitosei:       14,         // 業務委託該当性
+    himozuku:                  15,         // 紐づく他案件
+    haccyusyoNo:               18,         // 発注書No
+    seikyuURL:                 19,         // 請求書添付
+    sagyoURL:                  20,         // 作業報告書・納品書URL
+    sonotaURL1:                21,         // その他添付資料URL1
+    sonotaURL2:                22,         // その他添付資料URL2
+    sonotaURL3:                23,         // その他添付資料URL3
+    cyozohin:                  24,         // 貯蔵品の使用状況
+    bunkatsuShitei:            28,         // 分割指定方法   
+    bunkatsu_yojitsuNo1:       29,         // 分割予実No_1
+    bunkatsu_hiritsu1:         30,         // 分割比率_1
+    bunkatsu_kingaku1:         31,         // 分割金額（税抜）_1
+    bunkatsu_yojitsuNo2:       32,         // 分割予実No_2
+    bunkatsu_hiritsu2:         33,         // 分割比率_2
+    bunkatsu_kingaku2:         34,         // 分割金額（税抜）_2
+    bunkatsu_yojitsuNo3:       35,         // 分割予実No_3
+    bunkatsu_hiritsu3:         36,         // 分割比率_3
+    bunkatsu_kingaku3:         37,         // 分割金額（税抜）_3
+    bunkatsu_yojitsuNo4:       38,         // 分割予実No_4
+    bunkatsu_hiritsu4:         39,         // 分割比率_4
+    bunkatsu_kingaku4:         40,         // 分割金額（税抜）_4
+    bunkatsu_yojitsuNo5:       41,         // 分割予実No_5
+    bunkatsu_hiritsu5:         42,         // 分割比率_5
+    bunkatsu_kingaku5:         43,         // 分割金額（税抜）_5
+    bunkatsu_yojitsuNo6:       44,         // 分割予実No_6
+    bunkatsu_hiritsu6:         45,         // 分割比率_6
+    bunkatsu_kingaku6:         46,         // 分割金額（税抜）_6
+    bunkatsu_yojitsuNo7:       47,         // 分割予実No_7
+    bunkatsu_hiritsu7:         48,         // 分割比率_7
+    bunkatsu_kingaku7:         49,         // 分割金額（税抜）_7
+    goukei:                    50,         // 合計
+    seikyusyoKingaku:          51,         // 請求書金額（税抜）
+    bpsRenraku:                52,         // BPSへの連絡事項
+    nohusyoFlg:                54,         // 納付書フラグ
+    gamenURL:                  55,         // 画面URL   59⇨55
+    teisyutsStatus:            56,         // 請求提出ステイタス  60⇨56
+    hihyouji:                  57,         // 非表示フラグ  ※追加
+    userGroup:                 58,         // ユーザーグループ　※追加
+    teisyutusya:               59,         // 提出者    55⇨58
+    teisyutuTime:              60,         // 提出日時  56⇨59
+
+
+  }
+
+
+
+  // BO列に"提出済（編集不可）"がセットされているレコードを削除して「提出済（編集可）」のみappDataにセット
+  // appData = appDataAll
+  // .filter(row => row[seikyuColumnHeader.teisyutsStatus] === "提出済（編集可）" && row[seikyuColumnHeader.kanrihyoCD_yojitsuNo_time] !== "")
+  // .map(row => [...row]);
+
+  appData = appDataAll
+    .filter(row =>
+      row[seikyuColumnHeader.teisyutsStatus] === "提出済（編集可）" &&
+      row[seikyuColumnHeader.kanrihyoCD_yojitsuNo_time] !== "" &&
+      row[seikyuColumnHeader.hihyouji] !== "非表示"
+    )
+    .map(row => [...row]);
+
+//------------------------資産と原価の並び替え処理------------------------------
+
+  // 「管理表CD+予実No」と「紐づく予実No」をtrimしてカンマをハイフンに変換し、全てハイフンで結合。さらに提出日時が+9時間で表示されてしまうため、マイナス9時間で日本時間に合わせる。
+  appData.forEach(row => {
+    var gValue = row[seikyuColumnHeader.himozuku] ? row[seikyuColumnHeader.himozuku].toString().trim().replace(/ , /g, "-") : ""; // 紐づく他案件の余分なスペースやカンマを削除してgValueにセット
+    row[seikyuColumnHeader.kanrihyoCD_yojitsuNo] = row[seikyuColumnHeader.kanrihyoCD_yojitsuNo] + (gValue ? "-" + gValue : "");   // 管理表CD+予実Noの後ろにgVlaueをセット　　例）AC100001-AC100002-AC100003-AC100004
+    // row[seikyuColumnHeader.teisyutuTime] = Utilities.formatDate(new Date(row[seikyuColumnHeader.teisyutuTime]), "Asia/Tokyo","MM/dd");  // 提出日時が+9時間で表示されてしまうため、マイナス9時間で日本時間に合わせる。
+    var temp = new Date(row[seikyuColumnHeader.teisyutuTime]);
+    temp.setHours(temp.getHours() - 9); // 9時間戻す
+    row[seikyuColumnHeader.teisyutuTime] = Utilities.formatDate(temp, "Asia/Tokyo", "MM/dd");
+  });
+
+
+
+//------------------------資産と原価の並び替え処理------------------------------
+
+  // 予実Noのフラグ付け（資産=1, 原価=2, 費用=10）と末尾への追加。appDataの各行の末尾に「"10-1-10"」や「"2-10-10"」のように数字のフラグが付与される
+  appData.forEach(row => {
+
+      var yojitsuNos = row[seikyuColumnHeader.kanrihyoCD_yojitsuNo].split("-"); // 管理表CD+予実Noを分解　　例）[AC100001, AC100002, AC100003, AC100004]
+      var flagArray = [];
+      var assetNos = [];
+      var costNos = [];
+      var expenseNos = [];
+
+      yojitsuNos.forEach(no => {
+
+          var match = yojitsuData.find(yRow => yRow[yojitsuColumnHeader.kanrihyoCD_yojitsuNo] === no); // A列とマッチング。matchには「SA400301,費用/収益,業務委託費(システム)_＊＊＊」のように予実データが1行セットされる
+
+          if (match) {
+
+            var flag = "10"; // デフォルトは費用
+
+            // 資産と原価の判断。計上区分が「CGU（連単資産化NG）」である、または科目が「減価償却費_その他」「長期前払費用減価償却額_＊＊＊」のものを資産としている。
+            // if (["資産(毎月CO)", "資産(未成)", "資産(PC購入)", "資産(特許)", "資産(商標権)", "資産(2年償却)", "長期前払 他社持資産(毎月CO)", "長期前払 他社持資産(未成)"].includes(match[yojitsuColumnHeader.keijoKubun])) {
+            if ( ["CGU（連単資産化NG）"].includes(match[yojitsuColumnHeader.keijoKubun] ) || ["減価償却費_その他", "長期前払費用減価償却額_＊＊＊"].includes(match[yojitsuColumnHeader.kamoku] )) {
+                  flag = "1"; // 資産
+                  assetNos.push(no);
+              } else if (match[yojitsuColumnHeader.kamoku] === "売上原価_制作原価") {
+                  flag = "2"; // 原価
+                  costNos.push(no);
+              } else {
+                  expenseNos.push(no);
+              }
+
+            flagArray.push(flag);
+
+          }
+
+      });
+
+      row.push(flagArray.join("-")); // フラグ情報をappDataの末尾にセット
+
+  });
+
+
+  // 予実Noの並び替え（資産→原価→費用、各カテゴリ内は昇順）
+  appData.forEach(row => {
+
+      var yojitsuNos = (row[seikyuColumnHeader.kanrihyoCD_yojitsuNo] || "").split("-");
+      var flagArray = (row[row.length - 1] || "").split("-").map(f => parseInt(f)); // フラグデータ取得 & 数値変換
+
+      // 「資産」「原価」「費用」のいずれかが含まれるかチェック
+      var hasAsset = flagArray.includes(1);
+      var hasCost = flagArray.includes(2);
+      var hasExpense = flagArray.includes(10);
+
+      // 少なくとも 2 種類のカテゴリが混在する場合に並び替えを実施
+      if ((hasAsset + hasCost + hasExpense) >= 2) {
+          var assetNos = [];
+          var costNos = [];
+          var expenseNos = [];
+
+          yojitsuNos.forEach((no, i) => {
+              if (flagArray[i] === 1) {
+                  assetNos.push(no);
+              } else if (flagArray[i] === 2) {
+                  costNos.push(no);
+              } else {
+                  expenseNos.push(no);
+              }
+          });
+
+          // 各カテゴリ内で昇順に並び替え
+          assetNos.sort();
+          costNos.sort();
+          expenseNos.sort();
+
+          // 正しい順番で結合
+          row[seikyuColumnHeader.kanrihyoCD_yojitsuNo] = [...assetNos, ...costNos, ...expenseNos].join("-");
+      }
+
+  });
+
+
+
+
+// ----------- Appsheet特有のフォルダ/ファイルパス（「請求書等格納フォルダ/SA400101-20250317-201531.請求書添付.xxxxxx.pdf」）をファイル名のみ（「SA400101-20250317-201531.請求書添付.xxxxxx.pdf」）に変換する処理-----------------
+
+  var targetColumns = [seikyuColumnHeader.seikyuURL, seikyuColumnHeader.sagyoURL, seikyuColumnHeader.sonotaURL1, seikyuColumnHeader.sonotaURL2, seikyuColumnHeader.sonotaURL3]; // Q,R,S,T,U
+  appData.forEach(row => {
+    targetColumns.forEach(index => {
+      if (row[index]) {
+        row[index] = row[index].split("/").pop();
+      }
+    });
+  });
+
+
+
+// -----------GASの処理中に入力されたデータを除外するための処理-----------------
+
+  var fileNames = new Set(); // ファイル名を格納する Set
+
+  // seikyufileObjectListからファイル名をSetに格納
+  seikyufileObjectList.forEach(file => {
+    fileNames.add(file.getName());
+  });
+
+  var rowsToDelete = []; // 削除対象の行番号を保存
+  for (var i = 0; i < appData.length; i++) {
+    var key = appData[i][seikyuColumnHeader.seikyuURL]; // 請求書添付（Q列）のデータ
+
+    if (!fileNames.has(key)) { // ファイル名と一致しない場合
+      rowsToDelete.push(i + 1); // シートの行番号
+    }
+  }
+
+  // 削除処理（後ろから削除することでインデックスずれを防ぐ）
+  rowsToDelete.reverse().forEach(row => {
+    appData.splice(row - 1, 1); // 対象行を削除
+  });
+
+
+
+// --------------------------------------ファイル名でフォルダ内を検索して、取得したファイルのリンクを各列にセット------------------------------------------------------
+
+  // 「SA400101-20250317-201531.請求書添付.xxxxxx.pdf」をリンクに変換する処理
+  appData.forEach(row => {
+
+    setFileURL(seikyufileObjectList, row, seikyuColumnHeader.seikyuURL);
+    setFileURL(seikyufileObjectList, row, seikyuColumnHeader.sagyoURL);
+    setFileURL(seikyufileObjectList, row, seikyuColumnHeader.sonotaURL1);
+    setFileURL(seikyufileObjectList, row, seikyuColumnHeader.sonotaURL2);
+    setFileURL(seikyufileObjectList, row, seikyuColumnHeader.sonotaURL3);
+
+  });
+
+
+
+// --------------------------------------appDataを加工してpasteData（支払依頼WS貼付用データ）を作成する------------------------------------------------------------
+
+  // 転記先の支払依頼WSの列番号を取得
+  var shiharaiIraiColumnHeader = { 
+      userGroup:                     3,         // ユーザーグループ
+      bpsRenraku:                    7,         // BPSへの連絡事項
+      keijoMonth:                    8,         // 支払処理計上月
+      kanrihyoCD_yojitsuNo:         10,         // 管理表CD+予実No
+      seikyuURL:                    11,         // 請求書添付
+      meisaiNo:                     13,         // 明細No
+      syu_kanrihyoCD_yojitsuNo:     14,         // 主とする管理表CD+予実No
+      keijoBunrui:                  15,         // 計上分類
+      haccyuKessaiMeisaiNo:         16,         // 発注決裁明細No
+      kanrihyoCD_yojitsuNo_time:    18,         // 管理表CD+予実No+提出日時
+      // torihikisakiCD:               21,         // 取引先CD
+      // haccyugaku:                   30,         // 発注額
+      kakunousya:                   37,         // 請求書格納者
+      juryoTime:                    38,         // 請求書受領日時
+      sagyoURL:                     39,         // 作業報告書・納品書URL
+      sonotaURL1:                   40,         // その他添付資料URL1
+      sonotaURL2:                   41,         // その他添付資料URL2
+      sonotaURL3:                   42,         // その他添付資料URL3
+      meisaiKingaku_Zeinuki:        43,         // 明細金額/税抜(a)
+      meisaiKingaku_Zeikomi:        44,         // 明細金額/税込(b)
+      meisaiKingaku_Zeinuki_goukei: 45,         // 参考）請求書総額/税抜(Appの主合計）
+      appURL:                       46,         // App画面URL
+      cyozohin:                     91,         // 貯蔵品flg
+      haccyusyoNo:                  99,         // OASYS発注書No
+      nohusyoFlg:                  143,         // 納付書
+      // gyoumuItakuGaitosei:         177,         // 業務委託該当性
+
+  };
+
+  var pasteData = [];
+
+  // appDataを1行ずつ処理し、従の行を作成する
+  for (var i = 0; i < appData.length; i++) {
+
+    var rowData = appData[i];
+    var pasteKanrihyoCD_yojitsuNo = rowData[seikyuColumnHeader.kanrihyoCD_yojitsuNo].split("-");  // 管理表CD+予実Noをハイフンごとに分ける（次の処理で主従単で予実Noを別々にセットするため）
+    var count = pasteKanrihyoCD_yojitsuNo.length;           // 管理表CD+予実No欄にハイフンで繋がれた主従の予実Noがあるのでそれをカウント（次の処理で行追加するため）
+
+    // 請求書提出シートの1行に対して支払依頼ファイルが主従で複数行に分かれるため、作成する行数分だけforを繰り返す
+    for (var j = 0; j < count; j++) {
+
+      
+
+    // 「月度」の加工。支払処理計上月度があればそれをセット。無ければ（Appsheetの新規入力の場合）、getsudoをセット
+    // if(rowData[seikyuColumnHeader.keijoMonth]){
+
+    //   getsudo = rowData[seikyuColumnHeader.keijoMonth]
+
+    // } else {
+
+    //   getsudo = yearMonth;
+
+    // }
+
+
+
+
+
+      // 「明細金額/税抜(a)」の取得のためのロジック。予実Noを並び替えたことで分割金額欄との整合性が取れなくなっているため、予実Noと分割予実No1～7をマッチングして、合致したら分割金額を取得して「meisaiKingaku」にセット
+           if( rowData[seikyuColumnHeader.bunkatsu_yojitsuNo1] === pasteKanrihyoCD_yojitsuNo[j] ){ var meisaiKingaku = rowData[seikyuColumnHeader.bunkatsu_kingaku1] }
+      else if( rowData[seikyuColumnHeader.bunkatsu_yojitsuNo2] === pasteKanrihyoCD_yojitsuNo[j] ){ var meisaiKingaku = rowData[seikyuColumnHeader.bunkatsu_kingaku2] }
+      else if( rowData[seikyuColumnHeader.bunkatsu_yojitsuNo3] === pasteKanrihyoCD_yojitsuNo[j] ){ var meisaiKingaku = rowData[seikyuColumnHeader.bunkatsu_kingaku3] }
+      else if( rowData[seikyuColumnHeader.bunkatsu_yojitsuNo4] === pasteKanrihyoCD_yojitsuNo[j] ){ var meisaiKingaku = rowData[seikyuColumnHeader.bunkatsu_kingaku4] }
+      else if( rowData[seikyuColumnHeader.bunkatsu_yojitsuNo5] === pasteKanrihyoCD_yojitsuNo[j] ){ var meisaiKingaku = rowData[seikyuColumnHeader.bunkatsu_kingaku5] }
+      else if( rowData[seikyuColumnHeader.bunkatsu_yojitsuNo6] === pasteKanrihyoCD_yojitsuNo[j] ){ var meisaiKingaku = rowData[seikyuColumnHeader.bunkatsu_kingaku6] }
+      else if( rowData[seikyuColumnHeader.bunkatsu_yojitsuNo7] === pasteKanrihyoCD_yojitsuNo[j] ){ var meisaiKingaku = rowData[seikyuColumnHeader.bunkatsu_kingaku7] }
+
+      // 全列にnullをセット
+      var newRow = Array(140).fill(null);
+      
+      // 主従単に分けて処理する。主と単は「明細金額/税抜(a)」「明細金額/税込(b)」の入力有無が異なる（主だけ入力）
+      if( j === 0 && count !== 1 ){
+        
+        // 主の行の処理。「count !== 1」で作成対象の行数が1行以外の場合は「主」と判定している
+
+            // 指定の列に値をセット。左辺が支払依頼WSの列、右辺が請求書提出シート（appData）の列。
+            newRow[shiharaiIraiColumnHeader.userGroup]                    = rowData[seikyuColumnHeader.userGroup];
+            newRow[shiharaiIraiColumnHeader.bpsRenraku]                   = rowData[seikyuColumnHeader.bpsRenraku];
+            newRow[shiharaiIraiColumnHeader.keijoMonth]                   = yearMonth;
+            newRow[shiharaiIraiColumnHeader.kanrihyoCD_yojitsuNo]         = pasteKanrihyoCD_yojitsuNo[j];
+            newRow[shiharaiIraiColumnHeader.seikyuURL]                    = rowData[seikyuColumnHeader.seikyuURL];
+            newRow[shiharaiIraiColumnHeader.meisaiNo]                     = j + 1;
+            newRow[shiharaiIraiColumnHeader.syu_kanrihyoCD_yojitsuNo]     = pasteKanrihyoCD_yojitsuNo[0];
+            // newRow[shiharaiIraiColumnHeader.keijoBunrui]                  = rowData[seikyuColumnHeader.keijoBunrui];
+            newRow[shiharaiIraiColumnHeader.haccyuKessaiMeisaiNo]         = rowData[seikyuColumnHeader.haccyuKessaiMeisaiNo];
+            newRow[shiharaiIraiColumnHeader.kanrihyoCD_yojitsuNo_time]    = rowData[seikyuColumnHeader.kanrihyoCD_yojitsuNo_time];
+            newRow[shiharaiIraiColumnHeader.kakunousya]                   = rowData[seikyuColumnHeader.teisyutusya];
+            newRow[shiharaiIraiColumnHeader.juryoTime]                    = rowData[seikyuColumnHeader.teisyutuTime];
+            newRow[shiharaiIraiColumnHeader.sagyoURL]                     = rowData[seikyuColumnHeader.sagyoURL];
+            newRow[shiharaiIraiColumnHeader.sonotaURL1]                   = rowData[seikyuColumnHeader.sonotaURL1];
+            newRow[shiharaiIraiColumnHeader.sonotaURL2]                   = rowData[seikyuColumnHeader.sonotaURL2];
+            newRow[shiharaiIraiColumnHeader.sonotaURL3]                   = rowData[seikyuColumnHeader.sonotaURL3];
+            newRow[shiharaiIraiColumnHeader.meisaiKingaku_Zeinuki]        = meisaiKingaku;
+            newRow[shiharaiIraiColumnHeader.meisaiKingaku_Zeikomi]        = Math.floor(meisaiKingaku * 1.1);                      // 端数は切捨て
+            newRow[shiharaiIraiColumnHeader.meisaiKingaku_Zeinuki_goukei] = rowData[seikyuColumnHeader.goukei];
+            newRow[shiharaiIraiColumnHeader.appURL]                       = rowData[seikyuColumnHeader.gamenURL];
+            newRow[shiharaiIraiColumnHeader.cyozohin]                     = rowData[seikyuColumnHeader.cyozohin];
+            newRow[shiharaiIraiColumnHeader.haccyusyoNo]                  = rowData[seikyuColumnHeader.haccyusyoNo];
+            newRow[shiharaiIraiColumnHeader.nohusyoFlg]                   = rowData[seikyuColumnHeader.nohusyoFlg];
+
+      } else if( j === 0 && count === 1 ) {
+
+        // 単の行の処理。「count === 1」で作成対象の行数が1行の場合は「単」と判定している
+
+            // 指定の列に値をセット。左辺が支払依頼WSの列、右辺が請求書提出シート（appData）の列。
+            newRow[shiharaiIraiColumnHeader.userGroup]                    = rowData[seikyuColumnHeader.userGroup];
+            newRow[shiharaiIraiColumnHeader.bpsRenraku]                   = rowData[seikyuColumnHeader.bpsRenraku];
+            newRow[shiharaiIraiColumnHeader.keijoMonth]                   = yearMonth;
+            newRow[shiharaiIraiColumnHeader.kanrihyoCD_yojitsuNo]         = pasteKanrihyoCD_yojitsuNo[j];
+            newRow[shiharaiIraiColumnHeader.seikyuURL]                    = rowData[seikyuColumnHeader.seikyuURL];
+            newRow[shiharaiIraiColumnHeader.meisaiNo]                     = j + 1;
+            // newRow[shiharaiIraiColumnHeader.syu_kanrihyoCD_yojitsuNo]     = pasteKanrihyoCD_yojitsuNo[0];
+            // newRow[shiharaiIraiColumnHeader.keijoBunrui]                  = rowData[seikyuColumnHeader.keijoBunrui];
+            newRow[shiharaiIraiColumnHeader.haccyuKessaiMeisaiNo]         = rowData[seikyuColumnHeader.haccyuKessaiMeisaiNo];
+            newRow[shiharaiIraiColumnHeader.kanrihyoCD_yojitsuNo_time]    = rowData[seikyuColumnHeader.kanrihyoCD_yojitsuNo_time];
+            newRow[shiharaiIraiColumnHeader.kakunousya]                   = rowData[seikyuColumnHeader.teisyutusya];
+            newRow[shiharaiIraiColumnHeader.juryoTime]                    = rowData[seikyuColumnHeader.teisyutuTime];
+            newRow[shiharaiIraiColumnHeader.sagyoURL]                     = rowData[seikyuColumnHeader.sagyoURL];
+            newRow[shiharaiIraiColumnHeader.sonotaURL1]                   = rowData[seikyuColumnHeader.sonotaURL1];
+            newRow[shiharaiIraiColumnHeader.sonotaURL2]                   = rowData[seikyuColumnHeader.sonotaURL2];
+            newRow[shiharaiIraiColumnHeader.sonotaURL3]                   = rowData[seikyuColumnHeader.sonotaURL3];
+            // newRow[shiharaiIraiColumnHeader.meisaiKingaku_Zeinuki]        = meisaiKingaku;
+            // newRow[shiharaiIraiColumnHeader.meisaiKingaku_Zeikomi]        = Math.floor(meisaiKingaku * 1.1);
+            newRow[shiharaiIraiColumnHeader.meisaiKingaku_Zeinuki_goukei] = rowData[seikyuColumnHeader.goukei];
+            newRow[shiharaiIraiColumnHeader.appURL]                       = rowData[seikyuColumnHeader.gamenURL];
+            newRow[shiharaiIraiColumnHeader.cyozohin]                     = rowData[seikyuColumnHeader.cyozohin];
+            newRow[shiharaiIraiColumnHeader.haccyusyoNo]                  = rowData[seikyuColumnHeader.haccyusyoNo];
+            newRow[shiharaiIraiColumnHeader.nohusyoFlg]                   = rowData[seikyuColumnHeader.nohusyoFlg];
+
+      } else {
+
+        // 従の行の処理
+     
+            // 指定の列に値をセット。左辺が支払依頼WSの列、右辺が請求書提出シート（appData）の列。
+            newRow[shiharaiIraiColumnHeader.userGroup]                    = rowData[seikyuColumnHeader.userGroup];
+            // newRow[shiharaiIraiColumnHeader.bpsRenraku]                   = rowData[seikyuColumnHeader.bpsRenraku];
+            newRow[shiharaiIraiColumnHeader.keijoMonth]                   = yearMonth;
+            newRow[shiharaiIraiColumnHeader.kanrihyoCD_yojitsuNo]         = pasteKanrihyoCD_yojitsuNo[j];
+            newRow[shiharaiIraiColumnHeader.seikyuURL]                    = rowData[seikyuColumnHeader.seikyuURL];
+            newRow[shiharaiIraiColumnHeader.meisaiNo]                     = j + 1;
+            newRow[shiharaiIraiColumnHeader.syu_kanrihyoCD_yojitsuNo]     = pasteKanrihyoCD_yojitsuNo[0];
+            // newRow[shiharaiIraiColumnHeader.keijoBunrui]                  = null;
+            newRow[shiharaiIraiColumnHeader.haccyuKessaiMeisaiNo]         = rowData[seikyuColumnHeader.haccyuKessaiMeisaiNo];
+            newRow[shiharaiIraiColumnHeader.kanrihyoCD_yojitsuNo_time]    = rowData[seikyuColumnHeader.kanrihyoCD_yojitsuNo_time];
+            // newRow[shiharaiIraiColumnHeader.kakunousya]                   = null;
+            // newRow[shiharaiIraiColumnHeader.juryoTime]                    = null;
+            // newRow[shiharaiIraiColumnHeader.sagyoURL]                     = null;
+            // newRow[shiharaiIraiColumnHeader.sonotaURL1]                   = null;
+            // newRow[shiharaiIraiColumnHeader.sonotaURL2]                   = null;
+            // newRow[shiharaiIraiColumnHeader.sonotaURL3]                   = null;
+            newRow[shiharaiIraiColumnHeader.meisaiKingaku_Zeinuki]        = meisaiKingaku;
+            newRow[shiharaiIraiColumnHeader.meisaiKingaku_Zeikomi]        = Math.floor(meisaiKingaku * 1.1);                      // 端数は切捨て
+            // newRow[shiharaiIraiColumnHeader.meisaiKingaku_Zeinuki_goukei] = null;
+            // newRow[shiharaiIraiColumnHeader.appURL]                       = null;
+            // newRow[shiharaiIraiColumnHeader.cyozohin]                     = null;
+            // newRow[shiharaiIraiColumnHeader.haccyusyoNo]                  = null;
+            newRow[shiharaiIraiColumnHeader.nohusyoFlg]                   = null; // この行は削除（コメントアウトも）不可。この処理を削除すると貼付け時に行数が足りずエラーになるため
+
+      }
+
+      pasteData.push(newRow);
+
+      }
+
+  }
+
+
+  // 計上分類を実行
+  pasteData = keijoBunrui( pasteData, shiharaiIraiColumnHeader, yojitsuData, yojitsuColumnHeader );
+
+
+//-------------------------------------支払依頼WSファイル毎に転記----------------------------------------------------------
+
+  // 「pasteData」をOPT1とOPT2に分割
+  var pasteData_1 = [];
+  var pasteData_2 = [];
+  var pasteData_3 = [];
+
+  // それぞれの管理表CDを取得
+  var keys1 = new Set(["AC","AP", "AQ", "AR", "AW", "FS", "GP", "KA", "KD", "LB", "ZA", "MK"]);
+  var keys2 = new Set(["AG", "BT", "HP", "JH", "JL"]);
+  var keys3 = new Set(["SA", "SG", "SI", "SK"]);
+
+  // 「pasteData」を各ファイル分に分割
+  for (var i = 0; i < pasteData.length; i++) {
+
+    var row = pasteData[i];
+    // if (row.length < 9) continue; // データが不足している行をスキップ
+
+    var karncihyoCD = row[10].substring(0, 2); // 管理表CD+予実No（10列目）の先頭2文字を取得
+
+    if (keys1.has(karncihyoCD)) {
+
+      pasteData_1.push(row);
+
+    } else if (keys2.has(karncihyoCD)) {
+
+      pasteData_2.push(row);
+
+    } else if (keys3.has(karncihyoCD)) {
+
+      pasteData_3.push(row);
+
+    }
+
+  }
+
+console.log('pasteData_1:'+pasteData_1);
+console.log('pasteData_2:'+pasteData_2);
+console.log('pasteData_3:'+pasteData_3);
+  // 「pasteData」をシートに書き込む（[SaaS他]）
+  // if(pasteData_1.length > 0){
+  //   var lastrow_1 = outputSheet_1.getRange(outputSheet_1.getMaxRows(), 11).getNextDataCell(SpreadsheetApp.Direction.UP).getRow()    // 入力シートの最終行を取得（「管理表CD＋予実No（K列）」で判定）
+  //   outputSheet_1.getRange(lastrow_1 + 1, 1, pasteData_1.length, pasteData_1[0].length).setValues(pasteData_1);  
+  // }
+
+  if(pasteData_1.length > 0){
+    pasteData_1.forEach(row => {
+      outputSheet_1.appendRow(row);
+    });
+  }
+
+
+  // 「pasteData」をシートに書き込む（[販促（旅行飲食美容）+AG]）
+  // if(pasteData_2.length > 0){
+  //   var lastrow_2 = outputSheet_2.getRange(outputSheet_2.getMaxRows(), 11).getNextDataCell(SpreadsheetApp.Direction.UP).getRow()    // 入力シートの最終行を取得（「管理表CD＋予実No（K列）」で判定）
+  //   outputSheet_2.getRange(lastrow_2 + 1, 1, pasteData_2.length, pasteData_2[0].length).setValues(pasteData_2);
+  // }
+
+  if(pasteData_2.length > 0){
+    pasteData_2.forEach(row => {
+      outputSheet_2.appendRow(row);
+    });
+  }
+
+  // 「pasteData」をシートに書き込む（[BD室]）
+  // if(pasteData_3.length > 0){
+  //   var lastrow_3 = outputSheet_3.getRange(outputSheet_3.getMaxRows(), 11).getNextDataCell(SpreadsheetApp.Direction.UP).getRow()    // 入力シートの最終行を取得（「管理表CD＋予実No（K列）」で判定）
+  //   outputSheet_3.getRange(lastrow_3 + 1, 1, pasteData_3.length, pasteData_3[0].length).setValues(pasteData_3);
+  // }
+
+  if(pasteData_3.length > 0){
+    pasteData_3.forEach(row => {
+      outputSheet_3.appendRow(row);
+    });
+  }
+
+// ------------------------ファイルリネームとファイル移動--------------------------------
+
+  // pasteDataを「管理表CD+予実No＝主とする管理表CD+予実No」でフィルタリング。pasteDataは従の行もあるため、明細Noが「1」のもの（主と単）だけ処理する
+  filterPasteData = pasteData.filter( row => row[shiharaiIraiColumnHeader.meisaiNo] === 1 );
+
+  // ファイル名をリネーム（「提出済（編集可）」のデータを1件ずつ処理していく）
+  filterPasteData.forEach(row => {
+
+      var fileName = [];
+      var key = row[18]; // 19列目（キー）
+
+      appData.forEach(appRow => {
+          if (appRow[0] === key) { // appDataの1列目と照合
+              fileName.push([key, row[shiharaiIraiColumnHeader.kanrihyoCD_yojitsuNo_time], appRow[13], appRow[12]]); // [キー, 13列目, 12列目] を追加
+          }
+      });
+
+
+      // リネーム処理。支払処理計上月があれば（支払予定データからの登録であれば）ファイル名の末尾にそれをセット。無ければ（新規登録であれば）提出日時の年月をセット
+      if( row[shiharaiIraiColumnHeader.keijoMonth] ){
+
+        // var dateValue = row[shiharaiIraiColumnHeader.keijoMonth];          // 「支払処理計上月」をセット。無ければ「提出日時」の年月をセット。
+        var torihikisaki = fileName[0][2].substring(0, 17);                // 取引先名は30文字とする
+        var ankenmei = fileName[0][3].substring(0, 6);                     // 案件名は6文字とする
+
+      } else {
+
+        // var dateValue = new Date(row[shiharaiIraiColumnHeader.juryoTime]);            // 「支払処理計上月」をセット。無ければ「提出日時」の年月をセット。
+        // dateValue.setHours(dateValue.getHours() - 9);                                 // 9時間マイナス。リネーム後のファイル名が+9時間されてしまうため当処理を追加
+        // dateValue = Utilities.formatDate(new Date(dateValue), "Asia/Tokyo","yyyyMM"); // yyyy/MMに変換
+        var torihikisaki = fileName[0][2].substring(0, 17);                           // 取引先名は30文字とする
+        var ankenmei = fileName[0][3].substring(0, 6);                                // 案件名は6文字とする
+
+      }
+
+      // 「row[3]:管理表CD+予実No-会社名-案件名-支払処理計上月or提出日付」の形式で紐づけ。「baseName」がファイル名となる。
+      // var baseName = fileName[0][1] + "-" + torihikisaki + "-" + ankenmei + "-" + dateValue;
+      var baseName = fileName[0][1] + "-" + torihikisaki + "-" + ankenmei;
+
+
+      // 請求書URLが存在するかを判定
+      if ( row[shiharaiIraiColumnHeader.seikyuURL] ) {
+
+        toFolderFlg = "請求フォルダ";  // ファイルの移動先を「請求書」フォルダと「関連書類」フォルダに分けるためのフラグ
+
+        //---------------ファイル移動------------------------
+        processFile( row[shiharaiIraiColumnHeader.seikyuURL], `${baseName}_請求書`, toFolderFlg, regionList, seikyuFolderID, kanrenFolderID );
+
+      }
+
+
+      // その他添付ファイルのURLが存在するかを判定。for文でその他添付ファイルを全て処理する
+      for (var k = shiharaiIraiColumnHeader.sagyoURL; k <= shiharaiIraiColumnHeader.sonotaURL3; k++) {
+
+          var fileUrl = row[k];
+
+          // リネーム処理。支払処理計上月があれば（支払予定データからの登録であれば）ファイル名の末尾にそれをセット。無ければ（新規登録であれば）提出日時の年月をセット
+          if ( k === shiharaiIraiColumnHeader.sagyoURL && fileUrl ) {
+
+              toFolderFlg = 1;  // ファイルの移動先を「請求書」フォルダと「関連書類」フォルダに分けるためのフラグ
+
+              //---------------ファイル移動------------------------
+              processFile( fileUrl, `${baseName}_作業報告書・納品書`, toFolderFlg, regionList, seikyuFolderID, kanrenFolderID );
+
+          } else if ( k === shiharaiIraiColumnHeader.sonotaURL1 && fileUrl ) {
+
+              toFolderFlg = 1;  // ファイルの移動先を「請求書」フォルダと「関連書類」フォルダに分けるためのフラグ
+
+              //---------------ファイル移動------------------------
+              processFile( fileUrl, `${baseName}_その他添付資料①`, toFolderFlg, regionList, seikyuFolderID, kanrenFolderID );
+
+          } else if ( k === shiharaiIraiColumnHeader.sonotaURL2 && fileUrl ) {
+
+              toFolderFlg = 1;  // ファイルの移動先を「請求書」フォルダと「関連書類」フォルダに分けるためのフラグ
+
+              //---------------ファイル移動------------------------
+              processFile( fileUrl, `${baseName}_その他添付資料②`, toFolderFlg, regionList, seikyuFolderID, kanrenFolderID );
+
+          } else if ( k === shiharaiIraiColumnHeader.sonotaURL3 && fileUrl ) {
+
+              toFolderFlg = 1;  // ファイルの移動先を「請求書」フォルダと「関連書類」フォルダに分けるためのフラグ
+
+              //---------------ファイル移動------------------------
+              processFile( fileUrl, `${baseName}_その他添付資料③`, toFolderFlg, regionList, seikyuFolderID, kanrenFolderID );
+
+          }
+
+      }
+
+  });
+
+
+// return;
+
+
+
+//----------------請求提出シートにURLと「提出済（編集不可）」のステータスをセット------------------------
+
+  var yojitsuKeyMap = {}; // キーコードをマッピング（検索高速化）
+  for (var i = 0; i < appDataAll.length; i++) {
+      var key = appDataAll[i][0]; // appDataAllの1列目（キーコード）
+      if (key) {
+          yojitsuKeyMap[key] = i; // キーコード → 行番号 のマッピング
+      }
+  }
+
+  for (var m = 0; m < filterPasteData.length; m++) {
+
+      var keyCode = filterPasteData[m][shiharaiIraiColumnHeader.kanrihyoCD_yojitsuNo_time]; // キーを取得してkeyCodeにセット
+
+      if (keyCode in yojitsuKeyMap) { // appDataAllのキーと一致するかチェック
+
+          var rowIndex = yojitsuKeyMap[keyCode]; // 一致したappDataAllの行番号
+
+          // 更新データを作成
+          appDataAll[rowIndex][seikyuColumnHeader.seikyuURL]  = filterPasteData[m][shiharaiIraiColumnHeader.seikyuURL];   // 17列目 ← 11列目
+          appDataAll[rowIndex][seikyuColumnHeader.sagyoURL]   = filterPasteData[m][shiharaiIraiColumnHeader.sagyoURL];    // 18列目 ← 39列目
+          appDataAll[rowIndex][seikyuColumnHeader.sonotaURL1] = filterPasteData[m][shiharaiIraiColumnHeader.sonotaURL1];  // 19列目 ← 40列目
+          appDataAll[rowIndex][seikyuColumnHeader.sonotaURL2] = filterPasteData[m][shiharaiIraiColumnHeader.sonotaURL2];  // 20列目 ← 41列目
+          appDataAll[rowIndex][seikyuColumnHeader.sonotaURL3] = filterPasteData[m][shiharaiIraiColumnHeader.sonotaURL3];  // 21列目 ← 42列目
+          appDataAll[rowIndex][seikyuColumnHeader.teisyutsStatus] = "提出済（編集不可）"; // 61列目 ← "提出済（編集不可）"
+          // appDataAll[rowIndex].pop(); // 資産と原価の判定用に末尾に付与した「10-1-10」等のフラグを削除
+
+      }
+
+    // 1列の二次元配列に変換
+    var formattedData = [appDataAll[rowIndex]];
+
+    // if( appDataAll[rowIndex] > 0 ){
+      appSheet.getRange(rowIndex + 1, 1, formattedData.length, formattedData[0].length).setValues(formattedData);
+    // }
+
+  }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+//-----------------------ここからファイル移動---------------------------------------------------------------------------------------------------------------------------
+
+return;//下記は更新前old用に削除せずにそのままにしているだけ。実際には使用しないしない（2025/3/18）
+
+
+  var oldFolder = DriveApp.getFolderById(oldFolderID);
+
+  // スプレッドシートに記録されているファイル名（pasteDataFileName=「提出済（編集可）」のデータ）を取得（17, 22, 23, 24, 25, 34 列目）
+  var fileList = new Set();
+  for (var i = 0; i < pasteDataFileName.length; i++) {
+    var row = pasteDataFileName[i]; // 各行を取得
+    var targetColumns = [17, 22, 23, 24, 25, 34]; // 対象列のインデックス
+
+    for (var j = 0; j < targetColumns.length; j++) {
+      var index = targetColumns[j];
+      if (row[index]) {
+        fileList.add(row[index]); // 変換後のファイル名を追加
+      }
+    }
+  }
+
+  // 見積書等格納フォルダ内のファイルを処理
+  fileObjectList.forEach(file => {
+
+    var fileId = file.getId(); // ファイルのIDを取得
+    var latestFile = DriveApp.getFileById(fileId); // 最新のファイルオブジェクトを取得
+    var fileName = latestFile.getName(); // 最新のファイル名を取得
+
+      // Googleドライブのファイル名と提出済（編集可）のデータをマッチング
+      if (!fileList.has(fileName)) {
+
+      // マッチングしなかった場合、末尾に「_old」を追加して更新前oldフォルダに格納
+
+        // ファイル末尾に「_old」を追加
+        var fileEnd = fileName.includes('.') ? fileName.substring(fileName.lastIndexOf('.')) : "";
+        var fileBaseName = fileName.replace(fileEnd, ""); // 拡張子なしの名前
+        var newFileName = fileBaseName + "_old" + fileEnd; // "_old" を付加
+
+        Logger.log(`${fileName} を更新前oldフォルダに移動し、ファイル名を ${newFileName} に変更しました。`);
+
+        file.setName(newFileName); // ファイル名を変更
+        file.moveTo(oldFolder); // フォルダに移動
+
+  } else {
+
+    // マッチングした場合、各領域フォルダに格納
+
+      var region = fileName.substring(0, 2); // ファイル名の先頭2桁で領域を判定
+
+      if (region === "AC" && regionFolderID[0]) {
+        var regionFolder = DriveApp.getFolderById(regionFolderID[0]); // 移動先のフォルダを取得
+        file.moveTo(regionFolder);
+
+      } else if (region === "AG" && regionFolderID[1]) {
+        var regionFolder = DriveApp.getFolderById(regionFolderID[1]); // 移動先のフォルダを取得
+        file.moveTo(regionFolder);
+
+      } else if (region === "AP" && regionFolderID[1]) {
+        var regionFolder = DriveApp.getFolderById(regionFolderID[2]); // 移動先のフォルダを取得
+        file.moveTo(regionFolder);
+
+      } else if (region === "AQ" && regionFolderID[1]) {
+        var regionFolder = DriveApp.getFolderById(regionFolderID[3]); // 移動先のフォルダを取得
+        file.moveTo(regionFolder);
+
+      } else if (region === "AR" && regionFolderID[1]) {
+        var regionFolder = DriveApp.getFolderById(regionFolderID[4]); // 移動先のフォルダを取得
+        file.moveTo(regionFolder);
+
+      } else if (region === "AW" && regionFolderID[1]) {
+        var regionFolder = DriveApp.getFolderById(regionFolderID[5]); // 移動先のフォルダを取得
+        file.moveTo(regionFolder);
+
+      } else if (region === "BT" && regionFolderID[1]) {
+        var regionFolder = DriveApp.getFolderById(regionFolderID[6]); // 移動先のフォルダを取得
+        file.moveTo(regionFolder);
+
+      } else if (region === "FS" && regionFolderID[1]) {
+        var regionFolder = DriveApp.getFolderById(regionFolderID[7]); // 移動先のフォルダを取得
+        file.moveTo(regionFolder);
+
+      } else if (region === "GP" && regionFolderID[1]) {
+        var regionFolder = DriveApp.getFolderById(regionFolderID[8]); // 移動先のフォルダを取得
+        file.moveTo(regionFolder);
+
+      } else if (region === "HP" && regionFolderID[1]) {
+        var regionFolder = DriveApp.getFolderById(regionFolderID[9]); // 移動先のフォルダを取得
+        file.moveTo(regionFolder);
+
+      } else if (region === "JH" && regionFolderID[1]) {
+        var regionFolder = DriveApp.getFolderById(regionFolderID[10]); // 移動先のフォルダを取得
+        file.moveTo(regionFolder);
+
+      } else if (region === "JL" && regionFolderID[1]) {
+        var regionFolder = DriveApp.getFolderById(regionFolderID[11]); // 移動先のフォルダを取得
+        file.moveTo(regionFolder);
+
+      } else if (region === "KA" && regionFolderID[1]) {
+        var regionFolder = DriveApp.getFolderById(regionFolderID[12]); // 移動先のフォルダを取得
+        file.moveTo(regionFolder);
+
+      } else if (region === "KD" && regionFolderID[1]) {
+        var regionFolder = DriveApp.getFolderById(regionFolderID[13]); // 移動先のフォルダを取得
+        file.moveTo(regionFolder);
+
+      } else if (region === "LB" && regionFolderID[1]) {
+        var regionFolder = DriveApp.getFolderById(regionFolderID[14]); // 移動先のフォルダを取得
+        file.moveTo(regionFolder);
+
+      } else if (region === "SA" && regionFolderID[1]) {
+        var regionFolder = DriveApp.getFolderById(regionFolderID[15]); // 移動先のフォルダを取得
+        file.moveTo(regionFolder);
+
+      } else if (region === "SG" && regionFolderID[1]) {
+        var regionFolder = DriveApp.getFolderById(regionFolderID[16]); // 移動先のフォルダを取得
+        file.moveTo(regionFolder);
+
+      } else if (region === "SI" && regionFolderID[1]) {
+        var regionFolder = DriveApp.getFolderById(regionFolderID[17]); // 移動先のフォルダを取得
+        file.moveTo(regionFolder);
+
+      } else if (region === "SK" && regionFolderID[1]) {
+        var regionFolder = DriveApp.getFolderById(regionFolderID[18]); // 移動先のフォルダを取得
+        file.moveTo(regionFolder);
+
+      }
+
+    }
+
+  });
+
+}
+
+＃ファイル名とURLのマッチング.gs
+// Appsheet特有のフォルダ/ファイルパス（請求書等格納フォルダ(AppSheet連携)/SA400101-20250317-201531.請求書添付.xxxxxx.pdf）をリンクに変換する処理
+
+function setFileURL(fileObjectList, row, columnIndex) {
+
+  var fileArray = []; // 配列を作成
+
+  // FileIterator を配列に変換
+  fileObjectList.forEach(file =>  {
+    fileArray.push([file.getName(), file.getUrl()]);
+  });
+
+  if (row[columnIndex]) {
+    var file = fileArray.find(f => f[0] === row[columnIndex]); // 配列に変換した後に find() を実行
+
+    if (file) {
+      row[columnIndex] = file[1]; // ファイルのURLをセット
+    }
+  }
+}
+
+＃ファイルのリネーム.gs
+// ------------------------指定URLのファイルをリネームし、フォルダへ移動する関数--------------------------------
+  function processFile( fileUrl, newFileName, toFolderFlg, regionList, seikyuFolderID, kanrenFolderID ) {
+
+      // try {
+
+          // URLからファイルIDを抽出してmatchにセット
+          var match = fileUrl.match(/[-\w]{25,}/);
+
+          // ファイルIDのファイルが存在するか確認
+          if(match){
+
+            fileId = match[0];
+
+          } else {
+
+            Logger.log("ファイルが見つかりません ");
+            return;
+          
+          }
+      
+
+          // ファイル名の変更
+          var file = DriveApp.getFileById( fileId );  // ファイルIDからファイルを取得
+          var originalName = file.getName();       // ファイルからファイル名を取得
+
+          // 拡張子を取得（"." を含めて）
+          var extension = "";
+          var dotIndex = originalName.lastIndexOf("."); // 最後のピリオドを検索してその場所の文字数を取得
+
+          if (dotIndex !== -1) { // ピリオドがあれば処理（拡張子が無ければ処理しない）
+            extension = originalName.substring(dotIndex); // 拡張子を取得
+          }
+
+          // 新しいファイル名に拡張子を追加
+          var renamedFile = newFileName + extension;  // 末尾に拡張子をセット
+
+          file.setName( renamedFile );                // ファイル名を変更
+
+          // ファイルの移動
+          var region = newFileName.substring(0, 2); // ファイル名の先頭2桁で領域を判定
+          var index = regionList.indexOf(region)    // 請求書提出ファイルの設定シートの管理表CDの一覧と管理表CDをマッチングして、一致した配列の番号をindexにセット
+console.log('regionList:'+regionList);
+          // ファイルを移動
+          if( toFolderFlg === "請求フォルダ" ){
+
+            var seikyuFolder = DriveApp.getFolderById( seikyuFolderID[index] );
+            file.moveTo( seikyuFolder );     // ファイルを移動
+          
+          } else {
+
+            var kanrenFolder = DriveApp.getFolderById( kanrenFolderID[index] );
+
+            file.moveTo( kanrenFolder );     // ファイルを移動
+
+          }
+          
+          Logger.log(`ファイルを移動しました。`);
+
+      // } catch (e) {
+          
+      //     Logger.log(`ファイルを移動できませんでした。`);
+      
+      // }
+
+  }
+  
+＃ファイルのリネーム.gs
+// ------------------------指定URLのファイルをリネームし、フォルダへ移動する関数--------------------------------
+  function processFile( fileUrl, newFileName, toFolderFlg, regionList, seikyuFolderID, kanrenFolderID ) {
+
+      // try {
+
+          // URLからファイルIDを抽出してmatchにセット
+          var match = fileUrl.match(/[-\w]{25,}/);
+
+          // ファイルIDのファイルが存在するか確認
+          if(match){
+
+            fileId = match[0];
+
+          } else {
+
+            Logger.log("ファイルが見つかりません ");
+            return;
+          
+          }
+      
+
+          // ファイル名の変更
+          var file = DriveApp.getFileById( fileId );  // ファイルIDからファイルを取得
+          var originalName = file.getName();       // ファイルからファイル名を取得
+
+          // 拡張子を取得（"." を含めて）
+          var extension = "";
+          var dotIndex = originalName.lastIndexOf("."); // 最後のピリオドを検索してその場所の文字数を取得
+
+          if (dotIndex !== -1) { // ピリオドがあれば処理（拡張子が無ければ処理しない）
+            extension = originalName.substring(dotIndex); // 拡張子を取得
+          }
+
+          // 新しいファイル名に拡張子を追加
+          var renamedFile = newFileName + extension;  // 末尾に拡張子をセット
+
+          file.setName( renamedFile );                // ファイル名を変更
+
+          // ファイルの移動
+          var region = newFileName.substring(0, 2); // ファイル名の先頭2桁で領域を判定
+          var index = regionList.indexOf(region)    // 請求書提出ファイルの設定シートの管理表CDの一覧と管理表CDをマッチングして、一致した配列の番号をindexにセット
+console.log('regionList:'+regionList);
+          // ファイルを移動
+          if( toFolderFlg === "請求フォルダ" ){
+
+            var seikyuFolder = DriveApp.getFolderById( seikyuFolderID[index] );
+            file.moveTo( seikyuFolder );     // ファイルを移動
+          
+          } else {
+
+            var kanrenFolder = DriveApp.getFolderById( kanrenFolderID[index] );
+
+            file.moveTo( kanrenFolder );     // ファイルを移動
+
+          }
+          
+          Logger.log(`ファイルを移動しました。`);
+
+      // } catch (e) {
+          
+      //     Logger.log(`ファイルを移動できませんでした。`);
+      
+      // }
+
+  }
+  
+＃計上分類.gs
+function keijoBunrui(pasteData, shiharaiIraiColumnHeader, yojitsuData, yojitsuColumnHeader) {
+  var keijoBunrui = [];
+  var yojitsuMap = {};
+
+  // yojitsuData（予実）をマッピング
+  yojitsuData.forEach(row => {
+    let keijoKubun = row[1]; // 計上区分
+    let kamoku = row[2];     // 科目
+    let bumon = row[3];      // 部門（組織）
+
+    if (keijoKubun === "CGU（連単資産化NG）" || kamoku === "減価償却費_その他" || kamoku === "長期前払費用減価償却額") {
+      keijoKubun = "資産";
+    } else {
+      keijoKubun = "資産以外";
+    }
+
+    yojitsuMap[row[0]] = [keijoKubun, kamoku, bumon]; // 予実データ全件に対して1件ずつ右記のようなマッピングをする　⇒　"AC120001":["資産以外","ハードウェア機器・保守売上（新規商品除く）","GD2763"]
+
+  });
+
+  // pasteData と予実情報を結合
+  pasteData.forEach(row => {
+
+    var key = row[10]; // 予実キー
+    var matched = yojitsuMap[key] || ["", "", ""];
+    keijoBunrui.push([...row, ...matched]); // 資産区分, 科目, 組織を末尾に追加
+ 
+  });
+
+  var assetFlagIndex = keijoBunrui[0].length - 3;
+  var kamokuIndex = keijoBunrui[0].length - 2;
+  var bumonIndex = keijoBunrui[0].length - 1;
+  var groupKeyIndex = 14;
+
+  var groupMap = {};
+
+  // グループごとに資産フラグ, 組織セット, 科目セットを収集
+  keijoBunrui.forEach(row => {
+    var key = row[groupKeyIndex];
+    var isAsset = row[assetFlagIndex] === "資産";
+    var kamoku = row[kamokuIndex];
+    var bumon = row[bumonIndex];
+
+    if (!key) return;
+
+    if (!groupMap[key]) {
+      groupMap[key] = {
+        hasAsset: false,
+        bumonSet: new Set(),
+        kamokuSet: new Set(),
+      };
+    }
+
+    if (isAsset) groupMap[key].hasAsset = true;
+    groupMap[key].bumonSet.add(bumon);
+    groupMap[key].kamokuSet.add(kamoku);
+  });
+
+  // 判定を追加（15列目にセット）
+  keijoBunrui.forEach(row => {
+    var key = row[groupKeyIndex];
+    if (!key || !groupMap[key]) {
+      row[15] = "";
+      return;
+    }
+
+    var { hasAsset, bumonSet, kamokuSet } = groupMap[key];
+    var isBumonSame = bumonSet.size === 1;
+    var isKamokuSame = kamokuSet.size === 1;
+
+    if (!hasAsset && isBumonSame && isKamokuSame) {
+      row[15] = "1.費用のみ・組織/科目一致";
+    } else if (!hasAsset) {
+      row[15] = "2.費用のみ・組織/科目不一致";
+    } else if (hasAsset && isBumonSame && isKamokuSame) {
+      row[15] = "3.資産含・組織/科目一致";
+    } else {
+      row[15] = "4.資産含・組織/科目不一致";
+    }
+  });
+
+  // 追加した列（資産区分・科目・組織・分類結果）を削除して返却
+  var result = keijoBunrui.map(row => row.slice(0, -3));
+
+  return result;
+}
+
+
+
+はい、承知いたしました。
+このGoogle Apps Script（GAS）コードの内容を解析し、分かりやすく解説します。
+
+このスクリTプトは、**AppSheetアプリから入力された請求書提出データを、指定された複数の支払依頼用スプレッドシートに自動で転記し、添付ファイルをリネームして適切なGoogle Driveフォルダに整理・格納する**ためのものです。
+
+全体として、請求書処理のワークフローを自動化する役割を担っています。
+
+---
+
+### ## 主な処理の流れ
+このスクリプトは、`appsheetToshiharaiIraisheet` というメイン関数によって、以下の順序で処理を実行します。
+
+1.  **データの準備と読み込み** 📑
+    * AppSheetからのデータが記録されているスプレッドシート（請求書提出データファイル）を開きます。
+    * その中から「請求提出」シート（AppSheetの入力データ）、「予実」シート（会計科目のマスターデータ）、「設定」シート（転記先ファイルIDやフォルダIDなどの設定情報）を読み込みます。
+    * 転記先となる3つの支払依頼用スプレッドシートを開きます。
+
+2.  **処理対象データの抽出** 🎯
+    * 「請求提出」シートから、ステータスが「**提出済（編集可）**」となっている未処理のデータを抽出します。
+    * これにより、処理済みのデータが二重で転記されるのを防ぎます。
+
+3.  **データの加工と整形** 🛠️
+    * **予実Noの整理**: 1つの請求に複数の案件（管理表CD+予実No）が紐づいている場合、それらをハイフンで連結します。
+    * **予実Noの並び替え**: 「予実」シートのマスターデータを参照し、各案件を「**資産**」「**原価**」「**費用**」に分類します。その後、「資産 → 原価 → 費用」の優先順位で並び替えます。
+    * **ファイル名の整形**: AppSheetから送られた添付ファイルのパスから、ファイル名だけを抽出します。
+
+4.  **転記用データの作成** ✍️
+    * AppSheetの1行のデータを、支払依頼スプレッドシートの形式に合わせて、案件（予実No）の数だけ**複数行のデータに分割**します。
+    * 複数の案件がある場合、最初の行を「**主**」、2行目以降を「**従**」として扱い、入力する情報を変えています。案件が1つだけの場合は「**単**」として処理されます。
+    * `keijoBunrui` 関数を呼び出し、関連する案件群全体の特性（資産を含むか、組織や科目が一致するか）を分析し、会計上の**「計上分類」を自動で判定**します。
+
+5.  **支払依頼シートへの転記** 📤
+    * 作成した転記用データを、案件の種類（管理表CDの先頭2文字）に応じて、**3つの異なる支払依頼スプレッドシートに振り分けて書き込みます**。
+
+6.  **添付ファイルのリネームと移動** 📁
+    * `processFile` 関数を使い、AppSheet経由でアップロードされた添付ファイル（請求書、作業報告書など）を、以下のような統一された命名規則に沿ってリネームします。
+        * 例： `管理表CD+予実No+提出日時-取引先名-案件名_請求書.pdf`
+    * リネームしたファイルを、「設定」シートで定められた**案件ごとのGoogle Driveフォルダへ自動で移動**させます。
+
+7.  **ステータス更新** ✅
+    * 全ての処理が完了した元の「請求提出」シートのデータについて、ステータスを「**提出済（編集不可）**」に更新します。
+    * これにより、次回の実行時に同じデータが処理されるのを防ぎます。
+
+---
+
+### ## 各関数の役割
+
+このスクリプトは、いくつかの連携する関数で構成されています。
+
+| 関数名 | ファイル名（コメント） | 役割 |
+| :--- | :--- | :--- |
+| **`appsheetToshiharaiIraisheet`** | `Appsheetの内容を入力シートに転記.gs` | 上記の処理フロー全体を管理・実行するメインの関数です。 |
+| **`keijoBunrui`** | `計上分類.gs` | 予実マスターと照合し、会計ルールに基づいた「計上分類」を自動で判定します。 |
+| **`processFile`** | `ファイルのリネーム.gs` | Google Drive上のファイルを特定し、リネームして指定フォルダへ移動させます。 |
+| **`setFileURL`** | `ファイル名とURLのマッチング.gs` | ファイル名から、Google Drive上の実際のファイルURLを取得します。 |
+
+---
+
+### ## このスクリプトの特徴
+
+* **AppSheetとの連携**: ユーザーが使いやすいAppSheetをデータ入力の窓口（フロントエンド）とし、複雑なデータ処理やファイル操作をGAS（バックエンド）で自動化する、という効率的な構成になっています。
+* **複雑な業務ロジックの実装**: 1つの請求に対して複数の案件を紐づけたり、会計上のルールに基づいて並び替えや分類を行ったりと、実際の経理業務に即した複雑なロジックが組み込まれています。
+* **ファイル管理の完全自動化**: 添付ファイルを自動でリネームし、適切なフォルダに格納することで、手作業による整理の手間やミスをなくし、証憑管理を効率化しています。
+
+
+処理時間に関して、非効率になっている部分はありますか。
+ファイルが増えれば増えるほどかかるなど、何かわかれば教えてください。
+
+はい、このスクリプトには、処理する**データ行数やファイル数が増えるほど処理時間が大幅に長くなる可能性のある非効率な部分**がいくつか見受けられます。
+
+特に影響が大きいと考えられるのは以下の3点です。
+
+-----
+
+### \#\# 1. 1行ずつのスプレッドシート書き込み (`appendRow`)
+
+**現状の処理**:
+支払依頼シートへデータを転記する際に、`appendRow` という命令を使い、**1行ずつ**書き込みを行っています。
+
+```javascript
+if(pasteData_1.length > 0){
+  pasteData_1.forEach(row => {
+    outputSheet_1.appendRow(row); // 1行ずつ書き込んでいる
+  });
+}
+```
+
+**問題点**:
+`appendRow` は1回実行するたびに、GASとスプレッドシート間で通信が発生します。例えば100行のデータを書き込む場合、100回の通信が発生するため、行数に比例して待ち時間が積み重なり、処理が非常に遅くなります。
+
+**改善案**:
+書き込むデータを一度大きな配列にまとめておき、最後に `setValues` という命令で**一括して書き込む**方法が推奨されます。これにより、通信が1回で済むため、処理速度が劇的に向上します。コード内に `setValues` を使った方法がコメントアウトされているため、それを有効化するのが良いでしょう。
+
+```javascript
+// 改善案の例
+if(pasteData_1.length > 0){
+  // 書き込み開始行を取得
+  var lastrow_1 = outputSheet_1.getLastRow();
+  // 指定した範囲に、配列のデータを一括で書き込む
+  outputSheet_1.getRange(lastrow_1 + 1, 1, pasteData_1.length, pasteData_1[0].length).setValues(pasteData_1);
+}
+```
+
+-----
+
+### \#\# 2. ループ内でのファイル操作（リネームと移動）
+
+**現状の処理**:
+処理対象の請求データ1件ごとにループ処理を行い、その中で添付ファイル（請求書、作業報告書など）をリネームし、フォルダへ移動させています。
+
+```javascript
+filterPasteData.forEach(row => {
+  // ...（中略）...
+  // ループの中でファイル移動の関数を呼び出している
+  processFile( fileUrl, `${baseName}_請求書`, ... );
+});
+```
+
+**問題点**:
+Google Drive上のファイルを操作する命令（`DriveApp.getFileById`, `file.setName`, `file.moveTo`など）は、Googleのサーバーへ問い合わせを行うため、時間がかかる処理です。
+このスクリプトでは、**処理する請求データの件数 × 添付ファイルの数だけ**、この時間のかかる処理が繰り返し実行されます。例えば、10件の請求データにそれぞれ3つのファイルが添付されていると、約30回もファイルの問い合わせ・操作が発生します。
+
+**改善案**:
+この処理の構造上、ループの外に出すのは難しいですが、「**ファイル数が増えれば増えるほど、ここの処理時間がボトルネックになる**」という点は認識しておく必要があります。将来的に処理時間が許容範囲を超えた場合は、スクリプトの実行方法（例：夜間に自動実行する、処理を分割するなど）を検討する必要があるかもしれません。
+
+-----
+
+### \#\# 3. ループ内でのデータ検索
+
+**現状の処理**:
+各請求データに紐づく「予実No」が「資産」か「費用」かを判定するために、「予実」シートの全データをループの中で毎回検索しています。
+
+```javascript
+yojitsuNos.forEach(no => {
+  // yojitsuData（予実シートの全データ）の中から一致するものを探している
+  var match = yojitsuData.find(yRow => yRow[yojitsuColumnHeader.kanrihyoCD_yojitsuNo] === no);
+  // ...
+});
+```
+
+**問題点**:
+`find` は配列の先頭から順番に一致するものを探すため、「予実」シートのデータが数百・数千行と増えてくると、この検索だけで多くの時間がかかるようになります。
+
+**改善案**:
+ループ処理を始める前に、一度だけ「予実」シートのデータを**検索しやすい形式（オブジェクト/マップ）に変換しておく**ことで、検索を高速化できます。これにより、データ量が増えても検索時間がほとんど変わらなくなります。
+
+-----
+
+### \#\# まとめ
+
+  * \*\*最も改善効果が高いのは「1. 1行ずつのスプレッドシート書き込み」\*\*です。ここを`setValues`による一括書き込みに変更するだけで、処理時間が大幅に短縮される可能性があります。
+  * 現状のデータ量で処理時間に問題がなければ急いで対応する必要はありませんが、将来的にデータが増えることを見越して、これらの点を修正しておくと、より安定した運用が可能になります。
+
+
+以下のGASの内容を解析してください。
+
+＃RPAデータ作成（経費）
+function createKeihiRPA( shiharaiIraiFileID ) {
+
+
+
+  // 支払依頼ファイルを取得
+  var ss = SpreadsheetApp.openById( shiharaiIraiFileID );
+
+  // 支払依頼ファイルの設定シートから値を取得
+  var inputSheet = ss.getSheetByName("入力");
+  var keihiSheet = ss.getSheetByName("RPAツール（経費）");
+  var settingsSheet = ss.getSheetByName("設定");
+
+  var zipFolderId = settingsSheet.getRange("C37").getValue(); // ZIPを格納するフォルダID
+
+  var keihiTypeSheet = ss.getSheetByName("経費タイプ");
+  var keihiTypeList = keihiTypeSheet.getRange("A4:D").getValues(); // 経費タイプ一覧を取得
+
+//-----支払依頼ファイル毎に入力シートの行数不足チェック-----
+
+  // var lastrow = []
+
+  // for (var i = 0; i < outputSheet.length; i++) {
+    
+  //   // 入力シートの書き込み先の行を取得
+  //   lastrow[i] = outputSheet[i].getRange(outputSheet[i].getMaxRows(), 11).getNextDataCell(SpreadsheetApp.Direction.UP).getRow()    // 入力シートの最終行を取得（「管理表CD＋予実No（K列）」で判定）
+  //   if( lastrow[i] <= 8 ){
+  //     lastrow[i] = 8;
+  //   }
+
+  //   // 入力シートの書き込み先の行を取得
+  //   var bottomrow = outputSheet[i].getMaxRows();                         // 最終行を取得
+  //   var lastrowValue = outputSheet[i].getRange(bottomrow, 1).getValue(); // 最終行の値を取得
+
+  //   // 「最終行に値がセットされている＝入力シート（書き込み先）の行が足りない」と判定し、処理を終了
+  //   if( lastrowValue ){
+  //       console.log("入力シートの行が足りません。入力シートに行を追加してください。");
+  //     return;
+  //   }
+
+  // }
+
+//------------------------入力シートのデータ取得------------------------------
+
+  // 入力シートのデータを取得
+  var inputDataAll = inputSheet.getRange("A9:GD" + inputSheet.getLastRow()).getValues();
+
+  // 支払依頼WSの列番号を取得
+  var inputColumnHeader = { 
+
+      keijoMonth:                      8,         // 支払処理計上月
+      kanrihyoCD:                      9,         // 管理表CD
+      kanrihyoCD_yojitsuNo:           10,         // 管理表CD+予実No
+      seikyuURL:                      11,         // 請求書URL
+      syu_kanrihyoCD_yojitsuNo:       14,         // 主とする管理表CD+予実No
+      kanrihyoCD_yojitsuNo_time:      18,         // 管理表CD+予実No+提出日時
+      kamoku:                         28,         // 科目
+      sagyoURL:                       39,         // 作業報告書・納品書URL
+      sonotaURL1:                     40,         // その他URL1
+      sonotaURL2:                     41,         // その他URL2
+      sonotaURL3:                     42,         // その他URL3
+      secondCheck:                   122,         // 2次チェック完了
+      rpaTaisyogai:                  123,         // RPA対象外
+      rpaConcurSyorisya:             126,         // RPA/Concur処理者 
+      cyakusyuFlg:                   127,         // 着手済フラグ
+      shiharaisakiCD:                145,         // 支払先CD
+      tourokuNo:                     147,         // 登録番号
+      syozokuSoshiki:                148,         // 所属組織
+      seikyusyoDaiyosyo:             149,         // 請求書代用書
+      seikyusyoNo:                   150,         // 請求書番号
+      shiharaiYoteibi:               151,         // 支払予定日
+      shiharaiKingakuZeikomi:        152,         // 支払金額（税込）
+      syohizeiCheck:                 153,         // 消費税チェック項目      
+      denpyoTekiyou:                 154,         // 伝票摘要
+      oasysNo:                       155,         // OASYS発注書No
+      sagyoHokokusyo:                156,         // 作業報告書添付確認      
+      meisaiNo:                      157,         // 明細No
+      keihiType:                     158,         // 経費タイプ
+      tatekae:                       159,         // 立替
+      meisaiCD:                      160,         // 明細コード
+      hiyoHutanSoshiki:              161,         // 費用負担組織
+      shiharaiKingakuZeinuki:        162,         // 支払金額（税抜）
+      syohizeigaku:                  163,         // 消費税額
+      pNohinbi:                      164,         // P納品日
+      all9:                          165,         // ALL9内容記入欄
+      riyoubiFrom:                   166,         // 利用日（From）
+      riyoubiTo:                     167,         // 利用日（To）
+      naiyou:                        168,         // 内容
+      syouhinNouhinbiCD:             169,         // (共)商品納品日CD
+      genkaCD:                       170,         // 原価CD
+      rpaSyoriTaisyo:                183,         // RPA処理対象フラグ      
+      genkaFlg:                      184,         // 原価フラグ
+
+  };
+
+  // RPAツール（経費）シートの列番号を取得
+  var keihiColumnHeader = { 
+
+      kanrihyoCD_yojitsuNo_time:       0,         // 管理表CD+予実No+提出日時
+      shiharaisakiCD:                  1,         // 支払先CD
+      tourokuNo:                       3,         // 登録番号なし
+      iraiSoshiki:                     5,         // 依頼組織(コード値)
+      phoneNo:                         6,         // 電話番号
+      syozokuSoshiki:                  7,         // 所属組織
+      oasysNo:                         8,         // OASYS発注書No
+      seikyusyoDaiyosyo:               9,         // 請求書代用書
+      seikyusyoNo:                    10,         // 請求書番号
+      shiharaiYoteibi:                11,         // 支払予定日
+      shiharaiKingakuZeikomi:         12,         // 支払金額（税込）
+      syohizeiCheck:                  13,         // 消費税ck項目
+      denpyoTekiyou:                  15,         // 伝票摘要
+      sagyoHokokusyo:                 16,         // 作業報告書添付確認   
+      meisaiNo:                       20,         // 明細Key
+      keihiType:                      21,         // 経費タイプ
+      tatekae:                        22,         // 立替
+      meisaiCD:                       23,         // 明細コード
+      hiyoHutanSoshiki:               24,         // 費用負担組織
+      shiharaiKingakuZeinuki:         25,         // 支払金額（税抜）
+      syohizeigaku:                   26,         // 消費税額
+      pNohinbi:                       27,         // P納品日
+      all9:                           28,         // ALL9内容記入欄
+      riyoubiFrom:                    29,         // 利用日（From）
+      riyoubiTo:                      30,         // 利用日（To）
+      naiyou:                         31,         // 内容
+
+  };
+
+
+  // 「2次チェック完了」に"完了"がセットされていて、かつ「RPA/Concur処理者」に値がセットされていて、かつ「着手済フラグ」がブランクのデータに対して「RPA対象フラグ」がセットされているためそれを抽出してfilterDataにセット
+  filterData = inputDataAll
+  .filter(row => row[inputColumnHeader.rpaSyoriTaisyo] === "処理対象")
+  .map(row => [...row]);
+
+  // 経費と原価を分けて「keihiData」と「genkaData」にセット
+  var keihiData = [];
+  var genkaData = [];
+
+  filterData.forEach(row => {
+    
+    if (row[inputColumnHeader.genkaFlg] === "原価以外") {
+      keihiData.push(row);
+    } else if( row[inputColumnHeader.genkaFlg] === "原価" ) {
+      genkaData.push(row);
+    }
+
+  });
+
+  // 処理対象データがなければ処理を終了
+  if( keihiData.length < 1) {
+    return;
+  }
+
+
+//--------------------------- 「経費」の処理 --------------------------------------------------------------------------------------------------------------
+
+
+  //---------------------------  経費データを加工 ------------------------------------------------------
+
+      var pasteData = [];
+      var zipDataAll = [];
+
+      // keihiDataを1行ずつ処理する
+      for (var j = 0; j < keihiData.length; j++) {
+
+        var rowData = keihiData[j];
+
+        // 電話番号をOPT1とOPT2に区分
+        if( rowData[inputColumnHeader.kanrihyoCD] === "SA" || rowData[inputColumnHeader.kanrihyoCD] === "SG" || rowData[inputColumnHeader.kanrihyoCD] === "SI" || rowData[inputColumnHeader.kanrihyoCD] === "SK" ){
+          var phoneNumber = '070-3329-9798'
+        } else {
+          var phoneNumber = '090-9848-2794'
+        }
+
+
+        // RPAツールの［経費タイプ］は経費タイプ一覧のB列をセットする必要があるため、Concurツールに表示された経費タイプ4桁と経費タイプ一覧のA列をマッチングしてB列を取得する
+        for (var k = 0; k < keihiTypeList.length; k++) {
+          if (keihiTypeList[k][0] === rowData[inputColumnHeader.keihiType]) { // 一致したらB列の経費タイプ名を返す
+              var keihiTypeName = keihiTypeList[k][1]; 
+          }
+        }
+
+        var daiyosyoToYes = '';
+        if(rowData[inputColumnHeader.seikyusyoDaiyosyo]){     // 2025/4/30 改修
+          daiyosyoToYes = '"Yes"';
+        }
+
+        var tatekaeToYes = '';
+        if(rowData[inputColumnHeader.tatekae]){     // 2025/7/8 改修
+          tatekaeToYes = '"Yes"';
+        }
+
+        var tourokuNo = '';
+        if(rowData[inputColumnHeader.tourokuNo]){     // 2025/4/30 改修
+          tourokuNo = '"'+rowData[inputColumnHeader.tourokuNo]+'"'
+        }
+
+        // 全列にnullをセット
+        var newRow = Array(36).fill(null);
+        var zipRow = Array(4).fill(null);
+
+        // 指定の列に値をセット。左辺が支払依頼WSの列、右辺が請求書提出シート（appData）の列。
+        newRow[keihiColumnHeader.kanrihyoCD_yojitsuNo_time]                    = rowData[inputColumnHeader.kanrihyoCD_yojitsuNo_time];
+        newRow[keihiColumnHeader.shiharaisakiCD]                               = rowData[inputColumnHeader.shiharaisakiCD];
+        newRow[keihiColumnHeader.tourokuNo]                                    = tourokuNo;    // 2025/4/30 改修
+        newRow[keihiColumnHeader.iraiSoshiki]                                  = 'JA1014';
+        newRow[keihiColumnHeader.phoneNo]                                      = phoneNumber;  // OPT1とOPT2で分ける
+        newRow[keihiColumnHeader.syozokuSoshiki]                               = rowData[inputColumnHeader.syozokuSoshiki];
+        newRow[keihiColumnHeader.oasysNo]                                      = rowData[inputColumnHeader.oasysNo];
+        newRow[keihiColumnHeader.seikyusyoDaiyosyo]                            = daiyosyoToYes;                                   // 2025/4/30 改修      
+        newRow[keihiColumnHeader.seikyusyoNo]                                  = rowData[inputColumnHeader.seikyusyoNo];
+        newRow[keihiColumnHeader.shiharaiYoteibi]                              = rowData[inputColumnHeader.shiharaiYoteibi];
+        newRow[keihiColumnHeader.shiharaiKingakuZeikomi]                       = rowData[inputColumnHeader.shiharaiKingakuZeikomi];
+        newRow[keihiColumnHeader.syohizeiCheck]                                = rowData[inputColumnHeader.syohizeiCheck];
+        newRow[keihiColumnHeader.denpyoTekiyou]                                = rowData[inputColumnHeader.denpyoTekiyou];
+        newRow[keihiColumnHeader.sagyoHokokusyo]                               = rowData[inputColumnHeader.sagyoHokokusyo];
+
+        // 明細情報（経費用）
+        newRow[keihiColumnHeader.meisaiNo]                                     = rowData[inputColumnHeader.meisaiNo];
+        newRow[keihiColumnHeader.keihiType]                                    = keihiTypeName;      
+        newRow[keihiColumnHeader.tatekae]                                      = tatekaeToYes;                                    // 2025/7/8 改修
+        newRow[keihiColumnHeader.meisaiCD]                                     = rowData[inputColumnHeader.meisaiCD];
+        newRow[keihiColumnHeader.hiyoHutanSoshiki]                             = rowData[inputColumnHeader.hiyoHutanSoshiki];
+        newRow[keihiColumnHeader.shiharaiKingakuZeinuki]                       = rowData[inputColumnHeader.shiharaiKingakuZeinuki];
+        newRow[keihiColumnHeader.syohizeigaku]                                 = rowData[inputColumnHeader.syohizeigaku];
+        newRow[keihiColumnHeader.pNohinbi]                                     = rowData[inputColumnHeader.pNohinbi];
+        newRow[keihiColumnHeader.all9]                                         = rowData[inputColumnHeader.all9];
+        newRow[keihiColumnHeader.riyoubiFrom]                                  = rowData[inputColumnHeader.riyoubiFrom];
+        newRow[keihiColumnHeader.riyoubiTo]                                    = rowData[inputColumnHeader.riyoubiTo];
+        newRow[keihiColumnHeader.naiyou]                                       = rowData[inputColumnHeader.naiyou];
+
+        // zip化用
+        zipRow[0]                                                              = rowData[inputColumnHeader.meisaiNo];
+        zipRow[1]                                                              = rowData[inputColumnHeader.seikyuURL];
+        zipRow[2]                                                              = rowData[inputColumnHeader.sagyoURL];
+        zipRow[3]                                                              = rowData[inputColumnHeader.sonotaURL1];
+        zipRow[4]                                                              = rowData[inputColumnHeader.sonotaURL2];
+        zipRow[5]                                                              = rowData[inputColumnHeader.sonotaURL3];
+
+        // pasteData（貼付け用データ）に1行ずつ追加
+        pasteData.push(newRow);
+        zipDataAll.push(zipRow);
+
+    }
+
+
+
+
+
+  //--------------------------- ヘッダーにのみ存在する値を明細データにコピーする ------------------------------------------------------
+
+  var groupMap = {};
+
+  // 親情報をマップに記録（明細Noが1の行を親とみなす）
+  pasteData.forEach(row => {
+
+    var key = row[keihiColumnHeader.kanrihyoCD_yojitsuNo_time];
+
+    // 明細Noが"1" または 1 のときだけ親として登録
+    if ((row[keihiColumnHeader.meisaiNo] === "1" || row[keihiColumnHeader.meisaiNo] === 1) && !groupMap[key]) {
+      groupMap[key] = {
+
+        shiharaisakiCD:           row[keihiColumnHeader.shiharaisakiCD],          // 支払先CD
+        tourokuNo:                row[keihiColumnHeader.tourokuNo],               // 登録番号なし
+        syozokuSoshiki:           row[keihiColumnHeader.syozokuSoshiki],          // 所属組織(コード値)
+        oasysNo:                  row[keihiColumnHeader.oasysNo],                 // OASYS発注書No
+        seikyusyoDaiyosyo:        row[keihiColumnHeader.seikyusyoDaiyosyo],       // 請求書代用書
+        seikyusyoNo:              row[keihiColumnHeader.seikyusyoNo],             // 請求書番号
+        shiharaiYoteibi:          row[keihiColumnHeader.shiharaiYoteibi],         // 支払予定日
+        shiharaiKingakuZeikomi:   row[keihiColumnHeader.shiharaiKingakuZeikomi],  // 支払金額（税込）
+        syohizeiCheck:            row[keihiColumnHeader.syohizeiCheck],           // 消費税ck項目
+        denpyoTekiyou:            row[keihiColumnHeader.denpyoTekiyou],           // 伝票摘要
+        sagyoHokokusyo:           row[keihiColumnHeader.sagyoHokokusyo],          // 作業報告書添付確認
+
+      };
+    }
+  });
+
+  // 親情報を子にコピー
+  pasteData.forEach(row => {
+
+    var key = row[keihiColumnHeader.kanrihyoCD_yojitsuNo_time];
+    var parent = groupMap[key];
+
+    if (parent) {
+
+      row[keihiColumnHeader.shiharaisakiCD]         = parent.shiharaisakiCD;
+      row[keihiColumnHeader.tourokuNo]              = parent.tourokuNo;
+      row[keihiColumnHeader.syozokuSoshiki]         = parent.syozokuSoshiki;
+      row[keihiColumnHeader.oasysNo]                = parent.oasysNo;
+      row[keihiColumnHeader.seikyusyoDaiyosyo]      = parent.seikyusyoDaiyosyo;
+      row[keihiColumnHeader.seikyusyoNo]            = parent.seikyusyoNo;
+      row[keihiColumnHeader.shiharaiYoteibi]        = parent.shiharaiYoteibi;
+      row[keihiColumnHeader.shiharaiKingakuZeikomi] = parent.shiharaiKingakuZeikomi;
+      row[keihiColumnHeader.syohizeiCheck]          = parent.syohizeiCheck;
+      row[keihiColumnHeader.denpyoTekiyou]          = parent.denpyoTekiyou;
+      row[keihiColumnHeader.sagyoHokokusyo]         = parent.sagyoHokokusyo;
+
+    }
+  });
+
+
+
+  //---------------------------  明細Noに連番を付与（スプレッドシートの関数では資産行は明細Noが採番されないため、明細Noが飛び飛びになってしまうためGASで採番しなおす）  ------------------------------------------------------
+
+  var groupCounter = {}; // グループごとのカウントを保持
+
+  pasteData.forEach(row => {
+    var groupKey = row[0]; // グループキー（インデックス0）
+
+    // グループのカウントを初期化またはインクリメント
+    if (!groupCounter[groupKey]) {
+      groupCounter[groupKey] = 1;
+    } else {
+      groupCounter[groupKey]++;
+    }
+
+    // インデックス20に連番をセット
+    row[keihiColumnHeader.meisaiNo] = groupCounter[groupKey];
+  });
+
+
+
+  //---------------------------  URLからファイルを取得してzip化  ------------------------------------------------------
+
+  var zipData = zipDataAll.filter(row => row[0] === 1 );
+
+  // toZipFile関数を実行
+  var keihiGenkaflg = "経費";
+  var zipResult = toZipFile( zipData, zipFolderId, keihiGenkaflg )
+
+
+  //---------------------------  RPAツールシートに書き出し  ------------------------------------------------------
+
+    // 経費シートの書き込み先の行を取得
+    var lastrowB;
+    var lastrowC;
+    var lastrow;      
+    var lastColumn = keihiSheet.getLastColumn(); // シートの最終列を取得
+    lastrowB = keihiSheet.getRange(keihiSheet.getMaxRows(), 2).getNextDataCell(SpreadsheetApp.Direction.UP).getRow();
+    lastrowC = keihiSheet.getRange(keihiSheet.getMaxRows(), 3).getNextDataCell(SpreadsheetApp.Direction.UP).getRow();
+
+    // B列とC列の最終行を比較して、B列の方が多ければB列を最終行として扱う（請求書と関連書類のリンクを貼るのにB列には最5行必要なため）
+    if(lastrowB > lastrowC){
+      lastrow = lastrowB
+    } else {
+      lastrow = lastrowC
+    }
+
+    // 区切り行をグレーで色付け
+    keihiSheet.getRange(lastrow + 1, 1, 1, lastColumn).setBackground('#efefef');
+
+    // RPAツールシートに書き込み
+    keihiSheet.getRange(lastrow + 2, 3, pasteData.length, pasteData[0].length).setValues(pasteData);
+    keihiSheet.getRange(lastrow + 2, 2).setValue(zipResult.seikyuZipFileName);
+    keihiSheet.getRange(lastrow + 3, 2).setValue(zipResult.seikyuZIP);
+    keihiSheet.getRange(lastrow + 5, 2).setValue(zipResult.kanrenZipFileName);
+    if( zipResult.kanrenZIP ){
+      keihiSheet.getRange(lastrow + 6, 2).setValue(zipResult.kanrenZIP);
+    } else {
+      keihiSheet.getRange(lastrow + 6, 2).setValue('※関連書類ファイルはありません。');
+    }
+
+
+  
+  // 
+  var uniqueKeys = [...new Set(filterData.map(row => row[inputColumnHeader.kanrihyoCD_yojitsuNo_time]))];
+
+  var newCyakusyuFlg = inputDataAll.map(row => {
+
+    var tempFlg;
+
+    // すでに "着手" ならそのまま
+    if (row[inputColumnHeader.cyakusyuFlg] === "着手") {
+
+      tempFlg = row[inputColumnHeader.cyakusyuFlg];
+
+    } else if (uniqueKeys.includes(row[inputColumnHeader.kanrihyoCD_yojitsuNo_time])) {   // キーが一致していれば "着手" をセット
+
+      tempFlg = "着手";
+
+    } else {            // それ以外は元の値をそのまま
+
+      tempFlg = row[inputColumnHeader.cyakusyuFlg];
+
+    }
+
+    return [tempFlg];
+
+  });
+ // 着手フラグを返す
+  return newCyakusyuFlg;
+
+}
+
+＃RPAデータ作成（原価）.gs
+function createGenkaRPA( shiharaiIraiFileID, keihiCyakusyuFlg ) {
+
+  // 支払依頼ファイルを取得
+  var ss = SpreadsheetApp.openById( shiharaiIraiFileID );
+
+  // 支払依頼ファイルの設定シートから値を取得
+  var inputSheet = ss.getSheetByName("入力");
+  var genkaSheet = ss.getSheetByName("RPAツール（原価）");
+  var settingsSheet = ss.getSheetByName("設定");
+
+  var zipFolderId = settingsSheet.getRange("C37").getValue(); // ZIPを格納するフォルダID
+
+
+//-----支払依頼ファイル毎に入力シートの行数不足チェック-----
+
+  // var lastrow = []
+
+  // for (var i = 0; i < outputSheet.length; i++) {
+    
+  //   // 入力シートの書き込み先の行を取得
+  //   lastrow[i] = outputSheet[i].getRange(outputSheet[i].getMaxRows(), 11).getNextDataCell(SpreadsheetApp.Direction.UP).getRow()    // 入力シートの最終行を取得（「管理表CD＋予実No（K列）」で判定）
+  //   if( lastrow[i] <= 8 ){
+  //     lastrow[i] = 8;
+  //   }
+
+  //   // 入力シートの書き込み先の行を取得
+  //   var bottomrow = outputSheet[i].getMaxRows();                         // 最終行を取得
+  //   var lastrowValue = outputSheet[i].getRange(bottomrow, 1).getValue(); // 最終行の値を取得
+
+  //   // 「最終行に値がセットされている＝入力シート（書き込み先）の行が足りない」と判定し、処理を終了
+  //   if( lastrowValue ){
+  //       console.log("入力シートの行が足りません。入力シートに行を追加してください。");
+  //     return;
+  //   }
+
+  // }
+
+//------------------------入力シートのデータ取得------------------------------
+
+  // 入力シートのデータを取得
+  var inputDataAll = inputSheet.getRange("A9:GD" + inputSheet.getLastRow()).getValues();
+
+  // 支払依頼WSの列番号を取得
+  var inputColumnHeader = { 
+
+      keijoMonth:                      8,         // 支払処理計上月
+      kanrihyoCD:                      9,         // 管理表CD
+      kanrihyoCD_yojitsuNo:           10,         // 管理表CD+予実No
+      seikyuURL:                      11,         // 請求書URL
+      syu_kanrihyoCD_yojitsuNo:       14,         // 主とする管理表CD+予実No
+      kanrihyoCD_yojitsuNo_time:      18,         // 管理表CD+予実No+提出日時
+      kamoku:                         28,         // 科目
+      sagyoURL:                       39,         // 作業報告書・納品書URL
+      sonotaURL1:                     40,         // その他URL1
+      sonotaURL2:                     41,         // その他URL2
+      sonotaURL3:                     42,         // その他URL3
+      secondCheck:                   122,         // 2次チェック完了
+      rpaTaisyogai:                  123,         // RPA対象外
+      rpaConcurSyorisya:             126,         // RPA/Concur処理者 
+      cyakusyuFlg:                   127,         // 着手済フラグ
+      shiharaisakiCD:                145,         // 支払先CD
+      tourokuNo:                     147,         // 登録番号
+      syozokuSoshiki:                148,         // 所属組織
+      seikyusyoDaiyosyo:             149,         // 請求書代用書
+      seikyusyoNo:                   150,         // 請求書番号
+      shiharaiYoteibi:               151,         // 支払予定日
+      shiharaiKingakuZeikomi:        152,         // 支払金額（税込）
+      syohizeiCheck:                 153,         // 消費税チェック項目      
+      denpyoTekiyou:                 154,         // 伝票摘要
+      oasysNo:                       155,         // OASYS発注書No
+      sagyoHokokusyo:                156,         // 作業報告書添付確認      
+      meisaiNo:                      157,         // 明細No
+      keihiType:                     158,         // 経費タイプ
+      tatekae:                       159,         // 立替
+      meisaiCD:                      160,         // 明細コード
+      hiyoHutanSoshiki:              161,         // 費用負担組織
+      shiharaiKingakuZeinuki:        162,         // 支払金額（税抜）
+      syohizeigaku:                  163,         // 消費税額
+      pNohinbi:                      164,         // P納品日
+      all9:                          165,         // ALL9内容記入欄
+      riyoubiFrom:                   166,         // 利用日（From）
+      riyoubiTo:                     167,         // 利用日（To）
+      naiyou:                        168,         // 内容
+      syouhinNouhinbiCD:             169,         // (共)商品納品日CD
+      genkaCD:                       170,         // 原価CD
+      genkaComment:                  171,         // 原価コメント
+      rpaSyoriTaisyo:                183,         // RPA処理対象フラグ      
+      genkaFlg:                      184,         // 原価フラグ
+      jucyuFlg:                      185,         // (個)受注番号・企画連番
+      
+  };
+
+
+  // RPAツール（原価）シートの列番号を取得
+  var genkaColumnHeader = { 
+
+      kanrihyoCD_yojitsuNo_time:       0,         // 管理表CD+予実No+提出日時
+      shiharaisakiCD:                  1,         // 支払先CD
+      tourokuNo:                       3,         // 登録番号なし
+      iraiSoshiki:                     5,         // 依頼組織(コード値)
+      phoneNo:                         6,         // 電話番号
+      syozokuSoshiki:                  7,         // 所属組織
+      oasysNo:                         8,         // OASYS発注書No
+      seikyusyoDaiyosyo:               9,         // 請求書代用書
+      seikyusyoNo:                    10,         // 請求書番号
+      shiharaiYoteibi:                11,         // 支払予定日
+      shiharaiKingakuZeikomi:         12,         // 支払金額（税込）
+      syohizeiCheck:                  13,         // 消費税ck項目
+      denpyoTekiyou:                  15,         // 伝票摘要
+      sagyoHokokusyo:                 16,         // 作業報告書添付確認   
+      meisaiNo:                       20,         // 明細Key
+      tatekae:                        21,         // 立替
+      hiyoHutanSoshiki:               22,         // 費用負担組織
+      shiharaiKingakuZeinuki:         23,         // 支払金額（税抜）
+      syohizeigaku:                   24,         // 消費税額
+      pNohinbi:                       25,         // P納品日
+      riyoubiFrom:                    26,         // 利用日（From）
+      riyoubiTo:                      27,         // 利用日（To）
+      naiyou:                         28,         // 内容
+      anbun:                          29,         // 按分Key    // 2025/4/30 改修
+      percent:                        30,         // %値
+      jigyo1:                         31,         // (共)事業１
+      syouhinNouhinbiCD:              32,         // (共)商品納品日CD
+      jucyuNo:                        39,         // (個)受注番号・企画連番
+      genkaCD:                        40,         // 原価CD
+      genkaComment:                   41,         // 原価コメント
+      iraisyaSoshiki:                 42,         // 依頼者組織コード      2025/4/30 改修
+      tantousya:                      43,         // 担当者コード         2025/4/30 改修
+
+  };
+
+
+  // 「2次チェック完了」に"完了"がセットされていて、かつ「RPA/Concur処理者」に値がセットされていて、かつ「着手済フラグ」がブランクのデータに対して「RPA対象フラグ」がセットされているためそれを抽出してfilterDataにセット
+  filterData = inputDataAll
+  .filter(row => row[inputColumnHeader.rpaSyoriTaisyo] === "処理対象")
+  .map(row => [...row]);
+
+  // 経費と原価を分けて「genkaData」にセット
+  var genkaData = [];
+
+  filterData.forEach(row => {
+    
+    if (row[inputColumnHeader.genkaFlg] === "原価以外") {
+      // keihiData.push(row);
+    } else if( row[inputColumnHeader.genkaFlg] === "原価" ) {
+      genkaData.push(row);
+    }
+
+  });
+
+  // 処理対象データがなければ処理を終了
+  if( genkaData.length < 1) {
+    return;
+  }
+
+
+
+
+  //---------------------------  原価データを加工 ------------------------------------------------------
+
+      var pasteData = [];
+      var zipDataAll = [];
+
+      // genkaDataを1行ずつ処理する
+      for (var j = 0; j < genkaData.length; j++) {
+
+        var rowData = genkaData[j];
+
+        // 電話番号をOPT1とOPT2に区分
+        if( rowData[inputColumnHeader.kanrihyoCD] === "SA" || rowData[inputColumnHeader.kanrihyoCD] === "SG" || rowData[inputColumnHeader.kanrihyoCD] === "SI" || rowData[inputColumnHeader.kanrihyoCD] === "SK" ){
+          var phoneNumber = '070-3329-9798'
+        } else {
+          var phoneNumber = '090-9848-2794'
+        }
+
+        // 受注番号企画連番がある場合、"受注番号企画連番："の部分をカット
+        // if( rowData[inputColumnHeader.jucyuFlg] ){
+        //   var jucyu = rowData[inputColumnHeader.jucyuFlg].substring(9); // 10文字目以降を取得（インデックス9～）
+        // }
+
+        var daiyosyoToYes = '';
+        if(rowData[inputColumnHeader.seikyusyoDaiyosyo]){     // 2025/4/30 改修
+          var daiyosyoToYes = '"Yes"';
+        }
+
+        var tatekaeToYes = '';
+        if(rowData[inputColumnHeader.tatekae]){     // 2025/7/8 改修
+          tatekaeToYes = '"Yes"';
+        }
+
+        if(rowData[inputColumnHeader.tourokuNo]){     // 2025/4/30 改修
+          var tourokuNo = '"'+rowData[inputColumnHeader.tourokuNo]+'"'
+        }
+
+        // 全列にnullをセット
+        var newRow = Array(43).fill(null);
+        var zipRow = Array(4).fill(null);
+
+        // 指定の列に値をセット。左辺が支払依頼WSの列、右辺が請求書提出シート（appData）の列。
+        newRow[genkaColumnHeader.kanrihyoCD_yojitsuNo_time]                    = rowData[inputColumnHeader.kanrihyoCD_yojitsuNo_time];
+        newRow[genkaColumnHeader.shiharaisakiCD]                               = rowData[inputColumnHeader.shiharaisakiCD];
+        newRow[genkaColumnHeader.tourokuNo]                                    = tourokuNo;                                       // 2025/4/30 改修
+        newRow[genkaColumnHeader.iraiSoshiki]                                  = 'JA1014';
+        newRow[genkaColumnHeader.phoneNo]                                      = phoneNumber;  // OPT1とOPT2で分ける
+        newRow[genkaColumnHeader.syozokuSoshiki]                               = rowData[inputColumnHeader.syozokuSoshiki];
+        newRow[genkaColumnHeader.oasysNo]                                      = rowData[inputColumnHeader.oasysNo];
+        newRow[genkaColumnHeader.seikyusyoDaiyosyo]                            = daiyosyoToYes;
+        newRow[genkaColumnHeader.seikyusyoNo]                                  = rowData[inputColumnHeader.seikyusyoNo];
+        newRow[genkaColumnHeader.shiharaiYoteibi]                              = rowData[inputColumnHeader.shiharaiYoteibi];
+        newRow[genkaColumnHeader.shiharaiKingakuZeikomi]                       = rowData[inputColumnHeader.shiharaiKingakuZeikomi];
+        newRow[genkaColumnHeader.syohizeiCheck]                                = rowData[inputColumnHeader.syohizeiCheck];
+        newRow[genkaColumnHeader.denpyoTekiyou]                                = rowData[inputColumnHeader.denpyoTekiyou];
+        newRow[genkaColumnHeader.sagyoHokokusyo]                               = rowData[inputColumnHeader.sagyoHokokusyo];
+
+        // 明細情報（原価用）
+        newRow[genkaColumnHeader.meisaiNo]                                     = rowData[inputColumnHeader.meisaiNo];
+        newRow[genkaColumnHeader.tatekae]                                      = tatekaeToYes;
+        newRow[genkaColumnHeader.hiyoHutanSoshiki]                             = rowData[inputColumnHeader.hiyoHutanSoshiki];
+        newRow[genkaColumnHeader.shiharaiKingakuZeinuki]                       = rowData[inputColumnHeader.shiharaiKingakuZeinuki];
+        newRow[genkaColumnHeader.syohizeigaku]                                 = rowData[inputColumnHeader.syohizeigaku];
+        newRow[genkaColumnHeader.pNohinbi]                                     = rowData[inputColumnHeader.pNohinbi];
+        newRow[genkaColumnHeader.riyoubiFrom]                                  = rowData[inputColumnHeader.riyoubiFrom];
+        newRow[genkaColumnHeader.riyoubiTo]                                    = rowData[inputColumnHeader.riyoubiTo];
+        newRow[genkaColumnHeader.naiyou]                                       = rowData[inputColumnHeader.naiyou];
+        newRow[genkaColumnHeader.anbun]                                        = 1;                                   // 2025/4/30 改修
+        newRow[genkaColumnHeader.percent]                                      = 100;
+        newRow[genkaColumnHeader.jigyo1]                                       = 'S) 共用';
+        newRow[genkaColumnHeader.syouhinNouhinbiCD]                            = rowData[inputColumnHeader.syouhinNouhinbiCD];
+        newRow[genkaColumnHeader.jucyuNo]                                      = rowData[inputColumnHeader.jucyuFlg];;
+        newRow[genkaColumnHeader.genkaCD]                                      = rowData[inputColumnHeader.genkaCD];
+        newRow[genkaColumnHeader.genkaComment]                                 = rowData[inputColumnHeader.genkaComment];
+        newRow[genkaColumnHeader.iraisyaSoshiki]                               = rowData[inputColumnHeader.hiyoHutanSoshiki];   // 2025/4/30 改修
+        newRow[genkaColumnHeader.tantousya]                                    = 'T041043';   // 2025/4/30 改修
+
+        // zip化用
+        zipRow[0]                                                              = rowData[inputColumnHeader.meisaiNo];
+        zipRow[1]                                                              = rowData[inputColumnHeader.seikyuURL];
+        zipRow[2]                                                              = rowData[inputColumnHeader.sagyoURL];
+        zipRow[3]                                                              = rowData[inputColumnHeader.sonotaURL1];
+        zipRow[4]                                                              = rowData[inputColumnHeader.sonotaURL2];
+        zipRow[5]                                                              = rowData[inputColumnHeader.sonotaURL3];
+
+        // pasteData（貼付け用データ）に1行ずつ追加
+        pasteData.push(newRow);
+        zipDataAll.push(zipRow);
+
+    }
+
+
+
+
+  //--------------------------- ヘッダーにのみ存在する値を明細データにコピーする ------------------------------------------------------
+
+  var groupMap = {};
+
+  // 親情報をマップに記録（明細Noが1の行を親とみなす）
+  pasteData.forEach(row => {
+
+    var key = row[genkaColumnHeader.kanrihyoCD_yojitsuNo_time];
+
+    // 明細Noが"1" または 1 のときだけ親として登録
+    if ((row[genkaColumnHeader.meisaiNo] === "1" || row[genkaColumnHeader.meisaiNo] === 1) && !groupMap[key]) {
+      groupMap[key] = {
+
+        shiharaisakiCD:           row[genkaColumnHeader.shiharaisakiCD],          // 支払先CD
+        tourokuNo:                row[genkaColumnHeader.tourokuNo],               // 登録番号なし
+        syozokuSoshiki:           row[genkaColumnHeader.syozokuSoshiki],          // 所属組織(コード値)
+        oasysNo:                  row[genkaColumnHeader.oasysNo],                 // OASYS発注書No
+        seikyusyoDaiyosyo:        row[genkaColumnHeader.seikyusyoDaiyosyo],       // 請求書代用書
+        seikyusyoNo:              row[genkaColumnHeader.seikyusyoNo],             // 請求書番号
+        shiharaiYoteibi:          row[genkaColumnHeader.shiharaiYoteibi],         // 支払予定日
+        shiharaiKingakuZeikomi:   row[genkaColumnHeader.shiharaiKingakuZeikomi],  // 支払金額（税込）
+        syohizeiCheck:            row[genkaColumnHeader.syohizeiCheck],           // 消費税ck項目
+        denpyoTekiyou:            row[genkaColumnHeader.denpyoTekiyou],           // 伝票摘要
+        sagyoHokokusyo:           row[genkaColumnHeader.sagyoHokokusyo],          // 作業報告書添付確認
+
+      };
+    }
+  });
+
+  // 親情報を子にコピー
+  pasteData.forEach(row => {
+
+    var key = row[genkaColumnHeader.kanrihyoCD_yojitsuNo_time];
+    var parent = groupMap[key];
+
+    if (parent) {
+
+      row[genkaColumnHeader.shiharaisakiCD]         = parent.shiharaisakiCD;
+      row[genkaColumnHeader.tourokuNo]              = parent.tourokuNo;
+      row[genkaColumnHeader.syozokuSoshiki]         = parent.syozokuSoshiki;
+      row[genkaColumnHeader.oasysNo]                = parent.oasysNo;
+      row[genkaColumnHeader.seikyusyoDaiyosyo]      = parent.seikyusyoDaiyosyo;
+      row[genkaColumnHeader.seikyusyoNo]            = parent.seikyusyoNo;
+      row[genkaColumnHeader.shiharaiYoteibi]        = parent.shiharaiYoteibi;
+      row[genkaColumnHeader.shiharaiKingakuZeikomi] = parent.shiharaiKingakuZeikomi;
+      row[genkaColumnHeader.syohizeiCheck]          = parent.syohizeiCheck;
+      row[genkaColumnHeader.denpyoTekiyou]          = parent.denpyoTekiyou;
+      row[genkaColumnHeader.sagyoHokokusyo]         = parent.sagyoHokokusyo;
+
+    }
+  });
+
+
+
+  //---------------------------  明細Noに連番を付与（スプレッドシートの関数では資産行は明細Noが採番されないため、明細Noが飛び飛びになってしまうためGASで採番しなおす）  ------------------------------------------------------
+
+  var groupCounter = {}; // グループごとのカウントを保持
+
+  pasteData.forEach(row => {
+    var groupKey = row[0]; // グループキー（インデックス0）
+
+    // グループのカウントを初期化またはインクリメント
+    if (!groupCounter[groupKey]) {
+      groupCounter[groupKey] = 1;
+    } else {
+      groupCounter[groupKey]++;
+    }
+
+    // インデックス20に連番をセット
+    row[genkaColumnHeader.meisaiNo] = groupCounter[groupKey];
+  });
+
+
+  //---------------------------  URLからファイルを取得してzip化  ------------------------------------------------------
+
+  var zipData = zipDataAll.filter(row => row[0] === 1 );
+
+  // toZipFile関数を実行
+  var keihiGenkaflg = "原価";
+  var zipResult = toZipFile( zipData, zipFolderId, keihiGenkaflg )
+
+
+  //---------------------------  RPAツールシートに書き出し  ------------------------------------------------------
+
+      // 原価シートの書き込み先の行を取得
+      var lastrowB;
+      var lastrowC;
+      var lastrow;      
+      var lastColumn = genkaSheet.getLastColumn(); // シートの最終列を取得
+      lastrowB = genkaSheet.getRange(genkaSheet.getMaxRows(), 2).getNextDataCell(SpreadsheetApp.Direction.UP).getRow();
+      lastrowC = genkaSheet.getRange(genkaSheet.getMaxRows(), 3).getNextDataCell(SpreadsheetApp.Direction.UP).getRow();
+
+      // B列とC列の最終行を比較して、B列の方が多ければB列を最終行として扱う（請求書と関連書類のリンクを貼るのにB列には最5行必要なため）
+      if(lastrowB > lastrowC){
+        lastrow = lastrowB
+      } else {
+        lastrow = lastrowC
+      }
+
+      // 区切り行をグレーで色付け
+      genkaSheet.getRange(lastrow + 1, 1, 1, lastColumn).setBackground('#efefef');
+
+      // RPAツールシートに書き込み
+      genkaSheet.getRange(lastrow + 2, 3, pasteData.length, pasteData[0].length).setValues(pasteData);
+      genkaSheet.getRange(lastrow + 2, 2).setValue(zipResult.seikyuZipFileName);
+      genkaSheet.getRange(lastrow + 3, 2).setValue(zipResult.seikyuZIP);
+      genkaSheet.getRange(lastrow + 5, 2).setValue(zipResult.kanrenZipFileName);
+      // genkaSheet.getRange(lastrow + 6, 2).setValue(zipResult.kanrenZIP);
+      if( zipResult.kanrenZIP ){
+        genkaSheet.getRange(lastrow + 6, 2).setValue(zipResult.kanrenZIP);
+      } else {
+        genkaSheet.getRange(lastrow + 6, 2).setValue('※関連書類ファイルはありません。');
+      }
+
+
+
+
+  if(!keihiCyakusyuFlg){
+    
+    // 
+    var uniqueKeys = [...new Set(filterData.map(row => row[inputColumnHeader.kanrihyoCD_yojitsuNo_time]))];
+
+    var genkaCyakusyuFlg = inputDataAll.map(row => {
+
+      var tempFlg;
+
+      // すでに "着手" ならそのまま
+      if (row[inputColumnHeader.cyakusyuFlg] === "着手") {
+
+        tempFlg = row[inputColumnHeader.cyakusyuFlg];
+
+      } else if (uniqueKeys.includes(row[inputColumnHeader.kanrihyoCD_yojitsuNo_time])) {   // キーが一致していれば "着手" をセット
+
+        tempFlg = "着手";
+
+      } else {            // それ以外は元の値をそのまま
+
+        tempFlg = row[inputColumnHeader.cyakusyuFlg];
+
+      }
+
+      return [tempFlg];
+
+    });
+
+    return genkaCyakusyuFlg;
+
+  }
+
+}
+
+＃zip化.gs
+function toZipFile( zipData, zipFolderId, keihiGenkaflg ) {
+
+  var zipFolder = DriveApp.getFolderById(zipFolderId);
+  var seikyuBlobs = [];
+  var kanrenBlobs = [];
+
+  // 各行を処理
+  zipData.forEach(row => {
+    // 請求書URL（インデックス11）
+
+    var seikyuUrl = row[1];
+    var seikyuId = extractFileId(seikyuUrl);
+
+    if (seikyuId) {
+      try {
+        var file = DriveApp.getFileById(seikyuId);
+        seikyuBlobs.push(file.getBlob().setName(file.getName()));
+      } catch (e) {
+        Logger.log(`請求書ファイル取得失敗: ${seikyuUrl}`);
+      }
+    }
+
+    // その他URL（インデックス39〜42）
+    for (let i = 2; i <= 5; i++) {
+      var fileUrl = row[i];
+      var fileId = extractFileId(fileUrl);
+      if (fileId) {
+        try {
+          var file = DriveApp.getFileById(fileId);
+          kanrenBlobs.push(file.getBlob().setName(file.getName()));
+        } catch (e) {
+          Logger.log(`その他ファイル取得失敗: ${fileUrl}`);
+        }
+      }
+    }
+  });
+
+  // 日時を取得して整形（yyyymmddhhMMss）
+  var now = new Date();
+  var formattedTime = Utilities.formatDate(now, "Asia/Tokyo", "yyyyMMddHHmmss");
+
+  if( keihiGenkaflg === '経費' ){
+
+    var seikyuZipFileName = `請求書（経費）-${formattedTime}`;
+    var kanrenZipFileName = `関連書類（経費）-${formattedTime}`;
+    // ZIPファイル作成とアップロード（ファイル名：原価-yyyymmddhhMMss.zip）
+    if( seikyuBlobs.length > 0 ) {
+      var seikyuZipFile = zipFolder.createFile(Utilities.zip(seikyuBlobs, `請求書（経費）-${formattedTime}.zip`));
+      var seikyuZIP = seikyuZipFile.getUrl(); // URLを格納
+    }
+
+    if( kanrenBlobs.length > 0 ) {
+      var kanrenZipFile = zipFolder.createFile(Utilities.zip(kanrenBlobs, `関連書類（経費）-${formattedTime}.zip`));
+      var kanrenZIP = kanrenZipFile.getUrl(); // URLを格納
+    }
+
+  } else if( keihiGenkaflg === '原価' ){
+
+    var seikyuZipFileName = `請求書（原価）-${formattedTime}`;
+    var kanrenZipFileName = `関連書類（原価）-${formattedTime}`;
+
+    // ZIPファイル作成とアップロード（ファイル名：原価-yyyymmddhhMMss.zip）
+    if( seikyuBlobs.length > 0 ) {
+      var seikyuZipFile = zipFolder.createFile(Utilities.zip(seikyuBlobs, `請求書（原価）-${formattedTime}.zip`));
+      var seikyuZIP = seikyuZipFile.getUrl(); // URLを格納
+    }
+
+    if( kanrenBlobs.length > 0 ) {
+      var kanrenZipFile = zipFolder.createFile(Utilities.zip(kanrenBlobs, `関連書類（原価）-${formattedTime}.zip`));
+      var kanrenZIP = kanrenZipFile.getUrl(); // URLを格納
+    }
+
+    
+  }
+
+  return { seikyuZIP, kanrenZIP, seikyuZipFileName, kanrenZipFileName };
+  
+}
+
+
+
+
+
+// GoogleドライブのURLからファイルIDを抽出する関数
+function extractFileId(fileUrl) {
+
+  var match = fileUrl && fileUrl.match(/[-\w]{25,}/);
+  return match ? match[0] : null;
+
+}
+
+
+
+はい、承知いたしました。
+このGoogle Apps Script（GAS）コードの内容を解析し、分かりやすく解説します。
+
+このスクリプトは、**支払依頼スプレッドシートの「入力」シートに集約されたデータを、RPA（Robotic Process Automation）ツールが読み込める形式に整形し、専用のシートに出力するためのもの**です。また、関連する請求書などの添付ファイルをZIP形式に圧縮し、RPAがアクセスしやすいようにリンクを生成する機能も含まれています。
+
+---
+
+### ## スクリプト全体の目的
+このスクリプトの最終的な目的は、**人間による手作業を介さずに、会計システムへのデータ投入をRPAに任せるための「橋渡し」**をすることです。具体的には、以下の2種類のデータを生成します。
+
+* **経費データ**: 「RPAツール（経費）」シートに出力されます。
+* **原価データ**: 「RPAツール（原価）」シートに出力されます。
+
+---
+
+### ## 各関数の役割
+このスクリプトは、主に3つの関数で構成されており、それぞれが連携して動作します。
+
+| 関数名 | ファイル名（コメント） | 役割 |
+| :--- | :--- | :--- |
+| **`createKeihiRPA`** | `RPAデータ作成（経費）` | **経費データ**の抽出、加工、RPA用シートへの出力を担当します。 |
+| **`createGenkaRPA`** | `RPAデータ作成（原価）` | **原価データ**の抽出、加工、RPA用シートへの出力を担当します。`createKeihiRPA` とほぼ同じ構造です。 |
+| **`toZipFile`** | `zip化.gs` | 複数の添付ファイルのURLを受け取り、それらを**ZIPファイルに圧縮**してGoogle Driveに保存する専門の関数です。 |
+
+---
+
+### ## 具体的な処理の流れ
+`createKeihiRPA` と `createGenkaRPA` は、ほぼ同じ流れで処理を実行します。ここでは `createKeihiRPA` を例に解説します。
+
+1.  **データの準備** 📑
+    * 支払依頼スプレッドシートを開き、「入力」「RPAツール（経費）」「設定」などの必要なシートを読み込みます。
+
+2.  **RPA処理対象データの抽出** 🎯
+    * 「入力」シートに記載されたデータの中から、「**RPA処理対象フラグ**」が "処理対象" となっている行だけを抜き出します。
+    * さらに、抜き出したデータを「原価フラグ」に基づいて「経費」と「原価」に分類し、今回は「経費」データのみを処理対象とします。
+
+3.  **データ加工と整形** 🛠️
+    * 抽出した「経費」データを1行ずつループ処理し、RPAツールが読み込みやすい形式に変換していきます。
+    * **主な加工内容**:
+        * **コードから名称への変換**: 「経費タイプ」の4桁コードを、マスターシートを参照して「会議費」などの具体的な名称に変換します。
+        * **ヘッダー情報の補完**: 1つの請求に複数の明細がある場合、最初の行（親）にしか入力されていない請求書番号や支払先コードなどを、2行目以降の明細（子）にもコピーして補います。
+        * **明細番号の再採番**: 明細番号が飛び飛びになっている場合、`1, 2, 3...` ときれいな連番に振り直します。
+        * **RPA用の形式変換**: 「立替」などのチェックボックス項目を、RPAが認識しやすい `"Yes"` という文字列に変換します。
+
+4.  **添付ファイルのZIP化** 🗜️
+    * `toZipFile` 関数を呼び出します。
+    * 各請求データに紐づく**請求書**と、**作業報告書などの関連書類**を、それぞれ別のZIPファイルとして圧縮します。
+    * ZIPファイルは現在の日時を含む一意のファイル名（例：`請求書（経費）-20251003113000.zip`）で保存されます。
+
+5.  **RPA用シートへの出力** 📤
+    * 「RPAツール（経費）」シートの最終行に、区切り線としてグレーの背景色を設定します。
+    * 加工・整形したデータと、作成された**ZIPファイルのGoogle Driveリンク**をシートに一括で書き込みます。
+
+6.  **ステータス更新** ✅
+    * 処理が完了した「入力」シートのデータに対して、「**着手済フラグ**」を "着手" に更新するための情報を返します。これにより、同じデータが二重で処理されるのを防ぎます。
+
+この一連の処理が完了すると、RPAツールはこの出力結果を元に、会計システムへの自動入力などの後続タスクを実行できます。
+
+
+
+このRPA転記のGASで非効率となっている部分はありますか。先ほどと同様の１行ずつ書き込んでいるなどあれば教えてください。
+
+
+はい、このRPA転記用のGASにも、**処理件数やファイル数が増えるとパフォーマンスが低下する可能性のある非効率な部分**が含まれています。
+
+特に影響が大きいのは、添付ファイルをZIP化する処理です。一方で、前回ご指摘したシートへの書き込みについては、効率的な方法が採用されています。
+
+-----
+
+### \#\# 最も影響が大きい非効率な処理: ファイルのZIP化 🗜️
+
+**問題点**:
+このスクリプトの処理時間で**最大のボトルネック**となる可能性が高いのが、`toZipFile` 関数によるZIP圧縮処理です。
+
+```javascript
+// toZipFile 関数の中身（抜粋）
+zipData.forEach(row => {
+  // ...
+  var file = DriveApp.getFileById(seikyuId); // ← 時間のかかる処理
+  seikyuBlobs.push(file.getBlob());
+  // ...
+});
+```
+
+`DriveApp.getFileById()` という命令は、Google Driveサーバーにファイルを問い合わせるため、1回実行するだけでも比較的時間がかかります。このスクリプトでは、**処理対象の請求データ1件ごと**に、添付されているファイル（請求書、関連書類など）の数だけこの命令を繰り返し実行しています。
+
+例えば、**20件**の請求データにそれぞれ平均**3つ**のファイルが添付されている場合、合計で `20件 × 3ファイル = 60回` もGoogle Driveへの問い合わせが発生します。件数や添付ファイル数が多くなるほど、この待ち時間が積み重なり、**全体の処理時間が大幅に長くなる**主な原因となります。
+
+**改善案**:
+ファイルをZIP化するためには、各ファイルを取得する必要があるため、この処理の構造を根本的に変えるのは困難です。しかし、これがパフォーマンスに最も影響を与える部分であると認識することが重要です。もし処理時間が問題になる場合は、以下のような運用面での工夫が考えられます。
+
+  * 一度に処理する請求データの件数を制限する。
+  * 処理時間が長くなっても影響が少ない夜間などに、スクリプトを自動実行（トリガー設定）する。
+
+-----
+
+### \#\# 改善可能な非効率な処理: 経費タイプの検索 🔍
+
+**問題点**:
+`createKeihiRPA` 関数の中で、「経費タイプ」のコード（例: `5010`）から名称（例: `会議費`）を取得する際に、非効率な検索を行っています。
+
+```javascript
+// createKeihiRPA 関数の中身（抜粋）
+for (var j = 0; j < keihiData.length; j++) { // ① 請求データごとのループ
+  // ...
+  for (var k = 0; k < keihiTypeList.length; k++) { // ② 経費タイプリストのループ
+    if (keihiTypeList[k][0] === rowData[inputColumnHeader.keihiType]) {
+      var keihiTypeName = keihiTypeList[k][1];
+    }
+  }
+}
+```
+
+これは、**請求データ1件ごと**に、経費タイプリストの**最初から最後まで**一致するものを探す、という処理になっています。経費タイプの種類が増えれば増えるほど、この検索にかかる時間が長くなっていきます。
+
+**改善案**:
+ループ処理を始める前に、一度だけ経費タイプリストを**検索しやすい形式（オブジェクト/マップ）に変換しておく**ことで、この検索を高速化できます。
+
+```javascript
+// 改善案の例
+// 1. 事前にマップを作成する
+var keihiTypeMap = {};
+keihiTypeList.forEach(row => {
+  keihiTypeMap[row[0]] = row[1]; // 例: { "5010": "会議費", "5020": "旅費交通費" }
+});
+
+// 2. ループの中ではマップから直接値を取得する
+for (var j = 0; j < keihiData.length; j++) {
+  var rowData = keihiData[j];
+  var keihiTypeCode = rowData[inputColumnHeader.keihiType];
+  var keihiTypeName = keihiTypeMap[keihiTypeCode]; // ← 高速に検索できる
+  // ...
+}
+```
+
+-----
+
+### \#\# シートへの書き込みについて ✅
+
+前回ご指摘した「1行ずつの書き込み」については、このスクリプトでは改善されています。
+
+```javascript
+// RPAツールシートに書き込み（抜粋）
+keihiSheet.getRange(...).setValues(pasteData);
+```
+
+`setValues` を使って**データを一括で書き込んでいる**ため、ここは非常に効率的です。
+
+-----
+
+### \#\# まとめ
+
+  * このスクリプトの処理時間の大部分は、**添付ファイルをZIP化するためにGoogle Driveからファイルを取得する時間**に費やされる可能性が非常に高いです。
+  * **「経費タイプの検索」ロジックを修正する**ことで、一定のパフォーマンス改善が見込めます。
+  * データ量が増えて処理時間が問題になる場合は、特にファイル取得の部分が原因であることを念頭に置いて対策を検討するのが良いでしょう。
+
+
+例えば、Zip化する問題については、RPAで共有するためのフォルダにファイルを格納し、そのフォルダリンクをRPA側で通知するといった処理にすることで改善は可能でしょうか。（Zip化は避ける処理）
+
+
+はい、その方法は**非常に有効な改善策**です。ZIP化処理を避けて、ファイルを新しい共有フォルダにコピーする方式は、GASの処理時間を大幅に短縮できる可能性が高いです。
+
+まさにおっしゃる通り、現在の処理で最も時間がかかっているのは、Google Driveから一度ファイルの内容を全て読み出し（`getBlob`）、それをGASの実行環境で圧縮し（`Utilities.zip`）、再度Google Driveに新しいZIPファイルとして書き出す、という一連の重い処理です。
+
+ご提案の方法には、以下のようなメリットと注意点があります。
+
+-----
+
+### \#\# 改善される点（メリット）👍
+
+#### 1\. 圧倒的な処理速度の向上
+
+ファイルをコピーする命令（`file.makeCopy()`）は、Googleのサーバー内部で完結する非常に高速な処理です。GASがファイルの中身を一つずつ読み込む必要がないため、**添付ファイルの数やサイズが大きくても、処理時間がほとんど延びません**。ZIP化に比べて劇的に速くなることが期待できます。
+
+#### 2\. メモリや実行時間の上限に達しにくい
+
+現在のZIP化処理は、大きなファイルを扱おうとするとGASのメモリ上限や実行時間（最大6分）の上限に達してエラーになるリスクがあります。ファイルをコピーするだけの方法なら、このリスクを大幅に低減できます。
+
+-----
+
+### \#\# 考慮すべき点（注意点）⚙️
+
+#### 1\. RPA側の処理改修が必須
+
+これが最も重要な点です。現在のRPAは「**ZIPファイルのリンク**」を受け取って「ダウンロードして解凍する」という処理になっているはずです。
+新しい方法ではRPAは「**フォルダのリンク**」を受け取ることになるため、RPA側の処理を「**フォルダを開き、中にあるファイルを全てダウンロードする**」という内容に改修する必要があります。
+
+#### 2\. フォルダの管理
+
+処理ごとに新しいフォルダが作られるため、これらのフォルダをどう管理するかを決めておく必要があります。
+
+  * **命名規則**: どの請求のフォルダか分かるように、タイムスタンプや管理番号などで一意のフォルダ名を付けます。（例：`RPA連携_20251003_AC10001`）
+  * **整理**: 処理が終わったフォルダを定期的に削除するか、アーカイブ用のフォルダに移動させるなどのルールを決めておかないと、フォルダがどんどん溜まっていきます。
+
+-----
+
+### \#\# GASの実装イメージ 📂
+
+もしこの方法を採用する場合、`toZipFile` 関数の代わりに、以下のような関数を作成することになります。
+
+```javascript
+/**
+ * ファイルを指定のフォルダにコピーし、そのフォルダのURLを返す関数
+ * @param {Array} fileUrls - コピーしたいファイルのURLの配列
+ * @param {string} parentFolderId - コピー先フォルダを作成する親フォルダのID
+ * @returns {string} - 作成された新しいフォルダのURL
+ */
+function copyFilesToNewFolder(fileUrls, parentFolderId) {
+  var parentFolder = DriveApp.getFolderById(parentFolderId);
+  
+  // 1. タイムスタンプでユニークなフォルダ名を作成
+  var now = Utilities.formatDate(new Date(), "JST", "yyyyMMdd_HHmmss");
+  var newFolderName = "RPA連携_" + now;
+  var newFolder = parentFolder.createFolder(newFolderName);
+
+  // 2. ファイルを1つずつ新しいフォルダにコピー
+  fileUrls.forEach(url => {
+    if (!url) return; // URLが空ならスキップ
+    
+    var fileId = extractFileId(url); // 既存のID抽出関数を利用
+    if (fileId) {
+      try {
+        var file = DriveApp.getFileById(fileId);
+        file.makeCopy(newFolder); // ★高速なコピー処理
+      } catch (e) {
+        Logger.log("ファイルのコピーに失敗しました: " + url);
+      }
+    }
+  });
+
+  // 3. RPAに渡すフォルダのURLを返す
+  return newFolder.getUrl();
+}
+```
+
+### 結論
+
+ご提案の方法は、GASのパフォーマンスを改善する上で**非常に優れたアプローチ**です。RPA側の改修という前提はありますが、それをクリアできるのであれば、ZIP化よりもはるかに高速で安定した処理が実現できるでしょう。
