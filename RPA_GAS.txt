@@ -1,0 +1,1114 @@
+以下のGASの内容を解析して教えてください。
+
+＃RPAデータ作成（経費）.gs
+function createKeihiRPA( shiharaiIraiFileID ) {
+
+
+
+  // 支払依頼ファイルを取得
+  var ss = SpreadsheetApp.openById( shiharaiIraiFileID );
+
+  // 支払依頼ファイルの設定シートから値を取得
+  var inputSheet = ss.getSheetByName("入力");
+  var keihiSheet = ss.getSheetByName("RPAツール（経費）");
+  var settingsSheet = ss.getSheetByName("設定");
+
+  var zipFolderId = settingsSheet.getRange("C37").getValue(); // ZIPを格納するフォルダID
+
+  var keihiTypeSheet = ss.getSheetByName("経費タイプ");
+  var keihiTypeList = keihiTypeSheet.getRange("A4:D").getValues(); // 経費タイプ一覧を取得
+
+//-----支払依頼ファイル毎に入力シートの行数不足チェック-----
+
+  // var lastrow = []
+
+  // for (var i = 0; i < outputSheet.length; i++) {
+    
+  //   // 入力シートの書き込み先の行を取得
+  //   lastrow[i] = outputSheet[i].getRange(outputSheet[i].getMaxRows(), 11).getNextDataCell(SpreadsheetApp.Direction.UP).getRow()    // 入力シートの最終行を取得（「管理表CD＋予実No（K列）」で判定）
+  //   if( lastrow[i] <= 8 ){
+  //     lastrow[i] = 8;
+  //   }
+
+  //   // 入力シートの書き込み先の行を取得
+  //   var bottomrow = outputSheet[i].getMaxRows();                         // 最終行を取得
+  //   var lastrowValue = outputSheet[i].getRange(bottomrow, 1).getValue(); // 最終行の値を取得
+
+  //   // 「最終行に値がセットされている＝入力シート（書き込み先）の行が足りない」と判定し、処理を終了
+  //   if( lastrowValue ){
+  //       console.log("入力シートの行が足りません。入力シートに行を追加してください。");
+  //     return;
+  //   }
+
+  // }
+
+//------------------------入力シートのデータ取得------------------------------
+
+  // 入力シートのデータを取得
+  var inputDataAll = inputSheet.getRange("A9:GD" + inputSheet.getLastRow()).getValues();
+
+  // 支払依頼WSの列番号を取得
+  var inputColumnHeader = { 
+
+      keijoMonth:                      8,         // 支払処理計上月
+      kanrihyoCD:                      9,         // 管理表CD
+      kanrihyoCD_yojitsuNo:           10,         // 管理表CD+予実No
+      seikyuURL:                      11,         // 請求書URL
+      syu_kanrihyoCD_yojitsuNo:       14,         // 主とする管理表CD+予実No
+      kanrihyoCD_yojitsuNo_time:      18,         // 管理表CD+予実No+提出日時
+      kamoku:                         28,         // 科目
+      sagyoURL:                       39,         // 作業報告書・納品書URL
+      sonotaURL1:                     40,         // その他URL1
+      sonotaURL2:                     41,         // その他URL2
+      sonotaURL3:                     42,         // その他URL3
+      secondCheck:                   122,         // 2次チェック完了
+      rpaTaisyogai:                  123,         // RPA対象外
+      rpaConcurSyorisya:             126,         // RPA/Concur処理者 
+      cyakusyuFlg:                   127,         // 着手済フラグ
+      shiharaisakiCD:                145,         // 支払先CD
+      tourokuNo:                     147,         // 登録番号
+      syozokuSoshiki:                148,         // 所属組織
+      seikyusyoDaiyosyo:             149,         // 請求書代用書
+      seikyusyoNo:                   150,         // 請求書番号
+      shiharaiYoteibi:               151,         // 支払予定日
+      shiharaiKingakuZeikomi:        152,         // 支払金額（税込）
+      syohizeiCheck:                 153,         // 消費税チェック項目      
+      denpyoTekiyou:                 154,         // 伝票摘要
+      oasysNo:                       155,         // OASYS発注書No
+      sagyoHokokusyo:                156,         // 作業報告書添付確認      
+      meisaiNo:                      157,         // 明細No
+      keihiType:                     158,         // 経費タイプ
+      tatekae:                       159,         // 立替
+      meisaiCD:                      160,         // 明細コード
+      hiyoHutanSoshiki:              161,         // 費用負担組織
+      shiharaiKingakuZeinuki:        162,         // 支払金額（税抜）
+      syohizeigaku:                  163,         // 消費税額
+      pNohinbi:                      164,         // P納品日
+      all9:                          165,         // ALL9内容記入欄
+      riyoubiFrom:                   166,         // 利用日（From）
+      riyoubiTo:                     167,         // 利用日（To）
+      naiyou:                        168,         // 内容
+      syouhinNouhinbiCD:             169,         // (共)商品納品日CD
+      genkaCD:                       170,         // 原価CD
+      rpaSyoriTaisyo:                183,         // RPA処理対象フラグ      
+      genkaFlg:                      184,         // 原価フラグ
+
+  };
+
+  // RPAツール（経費）シートの列番号を取得
+  var keihiColumnHeader = { 
+
+      kanrihyoCD_yojitsuNo_time:       0,         // 管理表CD+予実No+提出日時
+      shiharaisakiCD:                  1,         // 支払先CD
+      tourokuNo:                       3,         // 登録番号なし
+      iraiSoshiki:                     5,         // 依頼組織(コード値)
+      phoneNo:                         6,         // 電話番号
+      syozokuSoshiki:                  7,         // 所属組織
+      oasysNo:                         8,         // OASYS発注書No
+      seikyusyoDaiyosyo:               9,         // 請求書代用書
+      seikyusyoNo:                    10,         // 請求書番号
+      shiharaiYoteibi:                11,         // 支払予定日
+      shiharaiKingakuZeikomi:         12,         // 支払金額（税込）
+      syohizeiCheck:                  13,         // 消費税ck項目
+      denpyoTekiyou:                  15,         // 伝票摘要
+      sagyoHokokusyo:                 16,         // 作業報告書添付確認   
+      meisaiNo:                       20,         // 明細Key
+      keihiType:                      21,         // 経費タイプ
+      tatekae:                        22,         // 立替
+      meisaiCD:                       23,         // 明細コード
+      hiyoHutanSoshiki:               24,         // 費用負担組織
+      shiharaiKingakuZeinuki:         25,         // 支払金額（税抜）
+      syohizeigaku:                   26,         // 消費税額
+      pNohinbi:                       27,         // P納品日
+      all9:                           28,         // ALL9内容記入欄
+      riyoubiFrom:                    29,         // 利用日（From）
+      riyoubiTo:                      30,         // 利用日（To）
+      naiyou:                         31,         // 内容
+
+  };
+
+
+  // 「2次チェック完了」に"完了"がセットされていて、かつ「RPA/Concur処理者」に値がセットされていて、かつ「着手済フラグ」がブランクのデータに対して「RPA対象フラグ」がセットされているためそれを抽出してfilterDataにセット
+  filterData = inputDataAll
+  .filter(row => row[inputColumnHeader.rpaSyoriTaisyo] === "処理対象")
+  .map(row => [...row]);
+
+  // 経費と原価を分けて「keihiData」と「genkaData」にセット
+  var keihiData = [];
+  var genkaData = [];
+
+  filterData.forEach(row => {
+    
+    if (row[inputColumnHeader.genkaFlg] === "原価以外") {
+      keihiData.push(row);
+    } else if( row[inputColumnHeader.genkaFlg] === "原価" ) {
+      genkaData.push(row);
+    }
+
+  });
+
+  // 処理対象データがなければ処理を終了
+  if( keihiData.length < 1) {
+    return;
+  }
+
+
+//--------------------------- 「経費」の処理 --------------------------------------------------------------------------------------------------------------
+
+
+  //---------------------------  経費データを加工 ------------------------------------------------------
+
+      var pasteData = [];
+      var zipDataAll = [];
+
+      // keihiDataを1行ずつ処理する
+      for (var j = 0; j < keihiData.length; j++) {
+
+        var rowData = keihiData[j];
+
+        // 電話番号をOPT1とOPT2に区分
+        if( rowData[inputColumnHeader.kanrihyoCD] === "SA" || rowData[inputColumnHeader.kanrihyoCD] === "SG" || rowData[inputColumnHeader.kanrihyoCD] === "SI" || rowData[inputColumnHeader.kanrihyoCD] === "SK" ){
+          var phoneNumber = '070-3329-9798'
+        } else {
+          var phoneNumber = '090-9848-2794'
+        }
+
+
+        // RPAツールの［経費タイプ］は経費タイプ一覧のB列をセットする必要があるため、Concurツールに表示された経費タイプ4桁と経費タイプ一覧のA列をマッチングしてB列を取得する
+        for (var k = 0; k < keihiTypeList.length; k++) {
+          if (keihiTypeList[k][0] === rowData[inputColumnHeader.keihiType]) { // 一致したらB列の経費タイプ名を返す
+              var keihiTypeName = keihiTypeList[k][1]; 
+          }
+        }
+
+        var daiyosyoToYes = '';
+        if(rowData[inputColumnHeader.seikyusyoDaiyosyo]){     // 2025/4/30 改修
+          daiyosyoToYes = '"Yes"';
+        }
+
+        var tatekaeToYes = '';
+        if(rowData[inputColumnHeader.tatekae]){     // 2025/7/8 改修
+          tatekaeToYes = '"Yes"';
+        }
+
+        var tourokuNo = '';
+        if(rowData[inputColumnHeader.tourokuNo]){     // 2025/4/30 改修
+          tourokuNo = '"'+rowData[inputColumnHeader.tourokuNo]+'"'
+        }
+
+        // 全列にnullをセット
+        var newRow = Array(36).fill(null);
+        var zipRow = Array(4).fill(null);
+
+        // 指定の列に値をセット。左辺が支払依頼WSの列、右辺が請求書提出シート（appData）の列。
+        newRow[keihiColumnHeader.kanrihyoCD_yojitsuNo_time]                    = rowData[inputColumnHeader.kanrihyoCD_yojitsuNo_time];
+        newRow[keihiColumnHeader.shiharaisakiCD]                               = rowData[inputColumnHeader.shiharaisakiCD];
+        newRow[keihiColumnHeader.tourokuNo]                                    = tourokuNo;    // 2025/4/30 改修
+        newRow[keihiColumnHeader.iraiSoshiki]                                  = 'JA1014';
+        newRow[keihiColumnHeader.phoneNo]                                      = phoneNumber;  // OPT1とOPT2で分ける
+        newRow[keihiColumnHeader.syozokuSoshiki]                               = rowData[inputColumnHeader.syozokuSoshiki];
+        newRow[keihiColumnHeader.oasysNo]                                      = rowData[inputColumnHeader.oasysNo];
+        newRow[keihiColumnHeader.seikyusyoDaiyosyo]                            = daiyosyoToYes;                                   // 2025/4/30 改修      
+        newRow[keihiColumnHeader.seikyusyoNo]                                  = rowData[inputColumnHeader.seikyusyoNo];
+        newRow[keihiColumnHeader.shiharaiYoteibi]                              = rowData[inputColumnHeader.shiharaiYoteibi];
+        newRow[keihiColumnHeader.shiharaiKingakuZeikomi]                       = rowData[inputColumnHeader.shiharaiKingakuZeikomi];
+        newRow[keihiColumnHeader.syohizeiCheck]                                = rowData[inputColumnHeader.syohizeiCheck];
+        newRow[keihiColumnHeader.denpyoTekiyou]                                = rowData[inputColumnHeader.denpyoTekiyou];
+        newRow[keihiColumnHeader.sagyoHokokusyo]                               = rowData[inputColumnHeader.sagyoHokokusyo];
+
+        // 明細情報（経費用）
+        newRow[keihiColumnHeader.meisaiNo]                                     = rowData[inputColumnHeader.meisaiNo];
+        newRow[keihiColumnHeader.keihiType]                                    = keihiTypeName;      
+        newRow[keihiColumnHeader.tatekae]                                      = tatekaeToYes;                                    // 2025/7/8 改修
+        newRow[keihiColumnHeader.meisaiCD]                                     = rowData[inputColumnHeader.meisaiCD];
+        newRow[keihiColumnHeader.hiyoHutanSoshiki]                             = rowData[inputColumnHeader.hiyoHutanSoshiki];
+        newRow[keihiColumnHeader.shiharaiKingakuZeinuki]                       = rowData[inputColumnHeader.shiharaiKingakuZeinuki];
+        newRow[keihiColumnHeader.syohizeigaku]                                 = rowData[inputColumnHeader.syohizeigaku];
+        newRow[keihiColumnHeader.pNohinbi]                                     = rowData[inputColumnHeader.pNohinbi];
+        newRow[keihiColumnHeader.all9]                                         = rowData[inputColumnHeader.all9];
+        newRow[keihiColumnHeader.riyoubiFrom]                                  = rowData[inputColumnHeader.riyoubiFrom];
+        newRow[keihiColumnHeader.riyoubiTo]                                    = rowData[inputColumnHeader.riyoubiTo];
+        newRow[keihiColumnHeader.naiyou]                                       = rowData[inputColumnHeader.naiyou];
+
+        // zip化用
+        zipRow[0]                                                              = rowData[inputColumnHeader.meisaiNo];
+        zipRow[1]                                                              = rowData[inputColumnHeader.seikyuURL];
+        zipRow[2]                                                              = rowData[inputColumnHeader.sagyoURL];
+        zipRow[3]                                                              = rowData[inputColumnHeader.sonotaURL1];
+        zipRow[4]                                                              = rowData[inputColumnHeader.sonotaURL2];
+        zipRow[5]                                                              = rowData[inputColumnHeader.sonotaURL3];
+
+        // pasteData（貼付け用データ）に1行ずつ追加
+        pasteData.push(newRow);
+        zipDataAll.push(zipRow);
+
+    }
+
+
+
+
+
+  //--------------------------- ヘッダーにのみ存在する値を明細データにコピーする ------------------------------------------------------
+
+  var groupMap = {};
+
+  // 親情報をマップに記録（明細Noが1の行を親とみなす）
+  pasteData.forEach(row => {
+
+    var key = row[keihiColumnHeader.kanrihyoCD_yojitsuNo_time];
+
+    // 明細Noが"1" または 1 のときだけ親として登録
+    if ((row[keihiColumnHeader.meisaiNo] === "1" || row[keihiColumnHeader.meisaiNo] === 1) && !groupMap[key]) {
+      groupMap[key] = {
+
+        shiharaisakiCD:           row[keihiColumnHeader.shiharaisakiCD],          // 支払先CD
+        tourokuNo:                row[keihiColumnHeader.tourokuNo],               // 登録番号なし
+        syozokuSoshiki:           row[keihiColumnHeader.syozokuSoshiki],          // 所属組織(コード値)
+        oasysNo:                  row[keihiColumnHeader.oasysNo],                 // OASYS発注書No
+        seikyusyoDaiyosyo:        row[keihiColumnHeader.seikyusyoDaiyosyo],       // 請求書代用書
+        seikyusyoNo:              row[keihiColumnHeader.seikyusyoNo],             // 請求書番号
+        shiharaiYoteibi:          row[keihiColumnHeader.shiharaiYoteibi],         // 支払予定日
+        shiharaiKingakuZeikomi:   row[keihiColumnHeader.shiharaiKingakuZeikomi],  // 支払金額（税込）
+        syohizeiCheck:            row[keihiColumnHeader.syohizeiCheck],           // 消費税ck項目
+        denpyoTekiyou:            row[keihiColumnHeader.denpyoTekiyou],           // 伝票摘要
+        sagyoHokokusyo:           row[keihiColumnHeader.sagyoHokokusyo],          // 作業報告書添付確認
+
+      };
+    }
+  });
+
+  // 親情報を子にコピー
+  pasteData.forEach(row => {
+
+    var key = row[keihiColumnHeader.kanrihyoCD_yojitsuNo_time];
+    var parent = groupMap[key];
+
+    if (parent) {
+
+      row[keihiColumnHeader.shiharaisakiCD]         = parent.shiharaisakiCD;
+      row[keihiColumnHeader.tourokuNo]              = parent.tourokuNo;
+      row[keihiColumnHeader.syozokuSoshiki]         = parent.syozokuSoshiki;
+      row[keihiColumnHeader.oasysNo]                = parent.oasysNo;
+      row[keihiColumnHeader.seikyusyoDaiyosyo]      = parent.seikyusyoDaiyosyo;
+      row[keihiColumnHeader.seikyusyoNo]            = parent.seikyusyoNo;
+      row[keihiColumnHeader.shiharaiYoteibi]        = parent.shiharaiYoteibi;
+      row[keihiColumnHeader.shiharaiKingakuZeikomi] = parent.shiharaiKingakuZeikomi;
+      row[keihiColumnHeader.syohizeiCheck]          = parent.syohizeiCheck;
+      row[keihiColumnHeader.denpyoTekiyou]          = parent.denpyoTekiyou;
+      row[keihiColumnHeader.sagyoHokokusyo]         = parent.sagyoHokokusyo;
+
+    }
+  });
+
+
+
+  //---------------------------  明細Noに連番を付与（スプレッドシートの関数では資産行は明細Noが採番されないため、明細Noが飛び飛びになってしまうためGASで採番しなおす）  ------------------------------------------------------
+
+  var groupCounter = {}; // グループごとのカウントを保持
+
+  pasteData.forEach(row => {
+    var groupKey = row[0]; // グループキー（インデックス0）
+
+    // グループのカウントを初期化またはインクリメント
+    if (!groupCounter[groupKey]) {
+      groupCounter[groupKey] = 1;
+    } else {
+      groupCounter[groupKey]++;
+    }
+
+    // インデックス20に連番をセット
+    row[keihiColumnHeader.meisaiNo] = groupCounter[groupKey];
+  });
+
+
+
+  //---------------------------  URLからファイルを取得してzip化  ------------------------------------------------------
+
+  var zipData = zipDataAll.filter(row => row[0] === 1 );
+
+  // toZipFile関数を実行
+  var keihiGenkaflg = "経費";
+  var zipResult = toZipFile( zipData, zipFolderId, keihiGenkaflg )
+
+
+  //---------------------------  RPAツールシートに書き出し  ------------------------------------------------------
+
+    // 経費シートの書き込み先の行を取得
+    var lastrowB;
+    var lastrowC;
+    var lastrow;      
+    var lastColumn = keihiSheet.getLastColumn(); // シートの最終列を取得
+    lastrowB = keihiSheet.getRange(keihiSheet.getMaxRows(), 2).getNextDataCell(SpreadsheetApp.Direction.UP).getRow();
+    lastrowC = keihiSheet.getRange(keihiSheet.getMaxRows(), 3).getNextDataCell(SpreadsheetApp.Direction.UP).getRow();
+
+    // B列とC列の最終行を比較して、B列の方が多ければB列を最終行として扱う（請求書と関連書類のリンクを貼るのにB列には最5行必要なため）
+    if(lastrowB > lastrowC){
+      lastrow = lastrowB
+    } else {
+      lastrow = lastrowC
+    }
+
+    // 区切り行をグレーで色付け
+    keihiSheet.getRange(lastrow + 1, 1, 1, lastColumn).setBackground('#efefef');
+
+    // RPAツールシートに書き込み
+    keihiSheet.getRange(lastrow + 2, 3, pasteData.length, pasteData[0].length).setValues(pasteData);
+    keihiSheet.getRange(lastrow + 2, 2).setValue(zipResult.seikyuZipFileName);
+    keihiSheet.getRange(lastrow + 3, 2).setValue(zipResult.seikyuZIP);
+    keihiSheet.getRange(lastrow + 5, 2).setValue(zipResult.kanrenZipFileName);
+    if( zipResult.kanrenZIP ){
+      keihiSheet.getRange(lastrow + 6, 2).setValue(zipResult.kanrenZIP);
+    } else {
+      keihiSheet.getRange(lastrow + 6, 2).setValue('※関連書類ファイルはありません。');
+    }
+
+
+  
+  // 
+  var uniqueKeys = [...new Set(filterData.map(row => row[inputColumnHeader.kanrihyoCD_yojitsuNo_time]))];
+
+  var newCyakusyuFlg = inputDataAll.map(row => {
+
+    var tempFlg;
+
+    // すでに "着手" ならそのまま
+    if (row[inputColumnHeader.cyakusyuFlg] === "着手") {
+
+      tempFlg = row[inputColumnHeader.cyakusyuFlg];
+
+    } else if (uniqueKeys.includes(row[inputColumnHeader.kanrihyoCD_yojitsuNo_time])) {   // キーが一致していれば "着手" をセット
+
+      tempFlg = "着手";
+
+    } else {            // それ以外は元の値をそのまま
+
+      tempFlg = row[inputColumnHeader.cyakusyuFlg];
+
+    }
+
+    return [tempFlg];
+
+  });
+
+
+
+
+  // 着手フラグを返す
+  return newCyakusyuFlg;
+
+}
+
+＃RPAデータ作成（原価）.gs
+function createGenkaRPA( shiharaiIraiFileID, keihiCyakusyuFlg ) {
+
+  // 支払依頼ファイルを取得
+  var ss = SpreadsheetApp.openById( shiharaiIraiFileID );
+
+  // 支払依頼ファイルの設定シートから値を取得
+  var inputSheet = ss.getSheetByName("入力");
+  var genkaSheet = ss.getSheetByName("RPAツール（原価）");
+  var settingsSheet = ss.getSheetByName("設定");
+
+  var zipFolderId = settingsSheet.getRange("C37").getValue(); // ZIPを格納するフォルダID
+
+
+//-----支払依頼ファイル毎に入力シートの行数不足チェック-----
+
+  // var lastrow = []
+
+  // for (var i = 0; i < outputSheet.length; i++) {
+    
+  //   // 入力シートの書き込み先の行を取得
+  //   lastrow[i] = outputSheet[i].getRange(outputSheet[i].getMaxRows(), 11).getNextDataCell(SpreadsheetApp.Direction.UP).getRow()    // 入力シートの最終行を取得（「管理表CD＋予実No（K列）」で判定）
+  //   if( lastrow[i] <= 8 ){
+  //     lastrow[i] = 8;
+  //   }
+
+  //   // 入力シートの書き込み先の行を取得
+  //   var bottomrow = outputSheet[i].getMaxRows();                         // 最終行を取得
+  //   var lastrowValue = outputSheet[i].getRange(bottomrow, 1).getValue(); // 最終行の値を取得
+
+  //   // 「最終行に値がセットされている＝入力シート（書き込み先）の行が足りない」と判定し、処理を終了
+  //   if( lastrowValue ){
+  //       console.log("入力シートの行が足りません。入力シートに行を追加してください。");
+  //     return;
+  //   }
+
+  // }
+
+//------------------------入力シートのデータ取得------------------------------
+
+  // 入力シートのデータを取得
+  var inputDataAll = inputSheet.getRange("A9:GD" + inputSheet.getLastRow()).getValues();
+
+  // 支払依頼WSの列番号を取得
+  var inputColumnHeader = { 
+
+      keijoMonth:                      8,         // 支払処理計上月
+      kanrihyoCD:                      9,         // 管理表CD
+      kanrihyoCD_yojitsuNo:           10,         // 管理表CD+予実No
+      seikyuURL:                      11,         // 請求書URL
+      syu_kanrihyoCD_yojitsuNo:       14,         // 主とする管理表CD+予実No
+      kanrihyoCD_yojitsuNo_time:      18,         // 管理表CD+予実No+提出日時
+      kamoku:                         28,         // 科目
+      sagyoURL:                       39,         // 作業報告書・納品書URL
+      sonotaURL1:                     40,         // その他URL1
+      sonotaURL2:                     41,         // その他URL2
+      sonotaURL3:                     42,         // その他URL3
+      secondCheck:                   122,         // 2次チェック完了
+      rpaTaisyogai:                  123,         // RPA対象外
+      rpaConcurSyorisya:             126,         // RPA/Concur処理者 
+      cyakusyuFlg:                   127,         // 着手済フラグ
+      shiharaisakiCD:                145,         // 支払先CD
+      tourokuNo:                     147,         // 登録番号
+      syozokuSoshiki:                148,         // 所属組織
+      seikyusyoDaiyosyo:             149,         // 請求書代用書
+      seikyusyoNo:                   150,         // 請求書番号
+      shiharaiYoteibi:               151,         // 支払予定日
+      shiharaiKingakuZeikomi:        152,         // 支払金額（税込）
+      syohizeiCheck:                 153,         // 消費税チェック項目      
+      denpyoTekiyou:                 154,         // 伝票摘要
+      oasysNo:                       155,         // OASYS発注書No
+      sagyoHokokusyo:                156,         // 作業報告書添付確認      
+      meisaiNo:                      157,         // 明細No
+      keihiType:                     158,         // 経費タイプ
+      tatekae:                       159,         // 立替
+      meisaiCD:                      160,         // 明細コード
+      hiyoHutanSoshiki:              161,         // 費用負担組織
+      shiharaiKingakuZeinuki:        162,         // 支払金額（税抜）
+      syohizeigaku:                  163,         // 消費税額
+      pNohinbi:                      164,         // P納品日
+      all9:                          165,         // ALL9内容記入欄
+      riyoubiFrom:                   166,         // 利用日（From）
+      riyoubiTo:                     167,         // 利用日（To）
+      naiyou:                        168,         // 内容
+      syouhinNouhinbiCD:             169,         // (共)商品納品日CD
+      genkaCD:                       170,         // 原価CD
+      genkaComment:                  171,         // 原価コメント
+      rpaSyoriTaisyo:                183,         // RPA処理対象フラグ      
+      genkaFlg:                      184,         // 原価フラグ
+      jucyuFlg:                      185,         // (個)受注番号・企画連番
+      
+  };
+
+
+  // RPAツール（原価）シートの列番号を取得
+  var genkaColumnHeader = { 
+
+      kanrihyoCD_yojitsuNo_time:       0,         // 管理表CD+予実No+提出日時
+      shiharaisakiCD:                  1,         // 支払先CD
+      tourokuNo:                       3,         // 登録番号なし
+      iraiSoshiki:                     5,         // 依頼組織(コード値)
+      phoneNo:                         6,         // 電話番号
+      syozokuSoshiki:                  7,         // 所属組織
+      oasysNo:                         8,         // OASYS発注書No
+      seikyusyoDaiyosyo:               9,         // 請求書代用書
+      seikyusyoNo:                    10,         // 請求書番号
+      shiharaiYoteibi:                11,         // 支払予定日
+      shiharaiKingakuZeikomi:         12,         // 支払金額（税込）
+      syohizeiCheck:                  13,         // 消費税ck項目
+      denpyoTekiyou:                  15,         // 伝票摘要
+      sagyoHokokusyo:                 16,         // 作業報告書添付確認   
+      meisaiNo:                       20,         // 明細Key
+      tatekae:                        21,         // 立替
+      hiyoHutanSoshiki:               22,         // 費用負担組織
+      shiharaiKingakuZeinuki:         23,         // 支払金額（税抜）
+      syohizeigaku:                   24,         // 消費税額
+      pNohinbi:                       25,         // P納品日
+      riyoubiFrom:                    26,         // 利用日（From）
+      riyoubiTo:                      27,         // 利用日（To）
+      naiyou:                         28,         // 内容
+      anbun:                          29,         // 按分Key    // 2025/4/30 改修
+      percent:                        30,         // %値
+      jigyo1:                         31,         // (共)事業１
+      syouhinNouhinbiCD:              32,         // (共)商品納品日CD
+      jucyuNo:                        39,         // (個)受注番号・企画連番
+      genkaCD:                        40,         // 原価CD
+      genkaComment:                   41,         // 原価コメント
+      iraisyaSoshiki:                 42,         // 依頼者組織コード      2025/4/30 改修
+      tantousya:                      43,         // 担当者コード         2025/4/30 改修
+
+  };
+
+
+  // 「2次チェック完了」に"完了"がセットされていて、かつ「RPA/Concur処理者」に値がセットされていて、かつ「着手済フラグ」がブランクのデータに対して「RPA対象フラグ」がセットされているためそれを抽出してfilterDataにセット
+  filterData = inputDataAll
+  .filter(row => row[inputColumnHeader.rpaSyoriTaisyo] === "処理対象")
+  .map(row => [...row]);
+
+  // 経費と原価を分けて「genkaData」にセット
+  var genkaData = [];
+
+  filterData.forEach(row => {
+    
+    if (row[inputColumnHeader.genkaFlg] === "原価以外") {
+      // keihiData.push(row);
+    } else if( row[inputColumnHeader.genkaFlg] === "原価" ) {
+      genkaData.push(row);
+    }
+
+  });
+
+  // 処理対象データがなければ処理を終了
+  if( genkaData.length < 1) {
+    return;
+  }
+
+
+
+
+  //---------------------------  原価データを加工 ------------------------------------------------------
+
+      var pasteData = [];
+      var zipDataAll = [];
+
+      // genkaDataを1行ずつ処理する
+      for (var j = 0; j < genkaData.length; j++) {
+
+        var rowData = genkaData[j];
+
+        // 電話番号をOPT1とOPT2に区分
+        if( rowData[inputColumnHeader.kanrihyoCD] === "SA" || rowData[inputColumnHeader.kanrihyoCD] === "SG" || rowData[inputColumnHeader.kanrihyoCD] === "SI" || rowData[inputColumnHeader.kanrihyoCD] === "SK" ){
+          var phoneNumber = '070-3329-9798'
+        } else {
+          var phoneNumber = '090-9848-2794'
+        }
+
+        // 受注番号企画連番がある場合、"受注番号企画連番："の部分をカット
+        // if( rowData[inputColumnHeader.jucyuFlg] ){
+        //   var jucyu = rowData[inputColumnHeader.jucyuFlg].substring(9); // 10文字目以降を取得（インデックス9～）
+        // }
+
+        var daiyosyoToYes = '';
+        if(rowData[inputColumnHeader.seikyusyoDaiyosyo]){     // 2025/4/30 改修
+          var daiyosyoToYes = '"Yes"';
+        }
+
+        var tatekaeToYes = '';
+        if(rowData[inputColumnHeader.tatekae]){     // 2025/7/8 改修
+          tatekaeToYes = '"Yes"';
+        }
+
+        if(rowData[inputColumnHeader.tourokuNo]){     // 2025/4/30 改修
+          var tourokuNo = '"'+rowData[inputColumnHeader.tourokuNo]+'"'
+        }
+
+        // 全列にnullをセット
+        var newRow = Array(43).fill(null);
+        var zipRow = Array(4).fill(null);
+
+        // 指定の列に値をセット。左辺が支払依頼WSの列、右辺が請求書提出シート（appData）の列。
+        newRow[genkaColumnHeader.kanrihyoCD_yojitsuNo_time]                    = rowData[inputColumnHeader.kanrihyoCD_yojitsuNo_time];
+        newRow[genkaColumnHeader.shiharaisakiCD]                               = rowData[inputColumnHeader.shiharaisakiCD];
+        newRow[genkaColumnHeader.tourokuNo]                                    = tourokuNo;                                       // 2025/4/30 改修
+        newRow[genkaColumnHeader.iraiSoshiki]                                  = 'JA1014';
+        newRow[genkaColumnHeader.phoneNo]                                      = phoneNumber;  // OPT1とOPT2で分ける
+        newRow[genkaColumnHeader.syozokuSoshiki]                               = rowData[inputColumnHeader.syozokuSoshiki];
+        newRow[genkaColumnHeader.oasysNo]                                      = rowData[inputColumnHeader.oasysNo];
+        newRow[genkaColumnHeader.seikyusyoDaiyosyo]                            = daiyosyoToYes;
+        newRow[genkaColumnHeader.seikyusyoNo]                                  = rowData[inputColumnHeader.seikyusyoNo];
+        newRow[genkaColumnHeader.shiharaiYoteibi]                              = rowData[inputColumnHeader.shiharaiYoteibi];
+        newRow[genkaColumnHeader.shiharaiKingakuZeikomi]                       = rowData[inputColumnHeader.shiharaiKingakuZeikomi];
+        newRow[genkaColumnHeader.syohizeiCheck]                                = rowData[inputColumnHeader.syohizeiCheck];
+        newRow[genkaColumnHeader.denpyoTekiyou]                                = rowData[inputColumnHeader.denpyoTekiyou];
+        newRow[genkaColumnHeader.sagyoHokokusyo]                               = rowData[inputColumnHeader.sagyoHokokusyo];
+
+        // 明細情報（原価用）
+        newRow[genkaColumnHeader.meisaiNo]                                     = rowData[inputColumnHeader.meisaiNo];
+        newRow[genkaColumnHeader.tatekae]                                      = tatekaeToYes;
+        newRow[genkaColumnHeader.hiyoHutanSoshiki]                             = rowData[inputColumnHeader.hiyoHutanSoshiki];
+        newRow[genkaColumnHeader.shiharaiKingakuZeinuki]                       = rowData[inputColumnHeader.shiharaiKingakuZeinuki];
+        newRow[genkaColumnHeader.syohizeigaku]                                 = rowData[inputColumnHeader.syohizeigaku];
+        newRow[genkaColumnHeader.pNohinbi]                                     = rowData[inputColumnHeader.pNohinbi];
+        newRow[genkaColumnHeader.riyoubiFrom]                                  = rowData[inputColumnHeader.riyoubiFrom];
+        newRow[genkaColumnHeader.riyoubiTo]                                    = rowData[inputColumnHeader.riyoubiTo];
+        newRow[genkaColumnHeader.naiyou]                                       = rowData[inputColumnHeader.naiyou];
+        newRow[genkaColumnHeader.anbun]                                        = 1;                                   // 2025/4/30 改修
+        newRow[genkaColumnHeader.percent]                                      = 100;
+        newRow[genkaColumnHeader.jigyo1]                                       = 'S) 共用';
+        newRow[genkaColumnHeader.syouhinNouhinbiCD]                            = rowData[inputColumnHeader.syouhinNouhinbiCD];
+        newRow[genkaColumnHeader.jucyuNo]                                      = rowData[inputColumnHeader.jucyuFlg];;
+        newRow[genkaColumnHeader.genkaCD]                                      = rowData[inputColumnHeader.genkaCD];
+        newRow[genkaColumnHeader.genkaComment]                                 = rowData[inputColumnHeader.genkaComment];
+        newRow[genkaColumnHeader.iraisyaSoshiki]                               = rowData[inputColumnHeader.hiyoHutanSoshiki];   // 2025/4/30 改修
+        newRow[genkaColumnHeader.tantousya]                                    = 'T041043';   // 2025/4/30 改修
+
+        // zip化用
+        zipRow[0]                                                              = rowData[inputColumnHeader.meisaiNo];
+        zipRow[1]                                                              = rowData[inputColumnHeader.seikyuURL];
+        zipRow[2]                                                              = rowData[inputColumnHeader.sagyoURL];
+        zipRow[3]                                                              = rowData[inputColumnHeader.sonotaURL1];
+        zipRow[4]                                                              = rowData[inputColumnHeader.sonotaURL2];
+        zipRow[5]                                                              = rowData[inputColumnHeader.sonotaURL3];
+
+        // pasteData（貼付け用データ）に1行ずつ追加
+        pasteData.push(newRow);
+        zipDataAll.push(zipRow);
+
+    }
+
+
+
+
+  //--------------------------- ヘッダーにのみ存在する値を明細データにコピーする ------------------------------------------------------
+
+  var groupMap = {};
+
+  // 親情報をマップに記録（明細Noが1の行を親とみなす）
+  pasteData.forEach(row => {
+
+    var key = row[genkaColumnHeader.kanrihyoCD_yojitsuNo_time];
+
+    // 明細Noが"1" または 1 のときだけ親として登録
+    if ((row[genkaColumnHeader.meisaiNo] === "1" || row[genkaColumnHeader.meisaiNo] === 1) && !groupMap[key]) {
+      groupMap[key] = {
+
+        shiharaisakiCD:           row[genkaColumnHeader.shiharaisakiCD],          // 支払先CD
+        tourokuNo:                row[genkaColumnHeader.tourokuNo],               // 登録番号なし
+        syozokuSoshiki:           row[genkaColumnHeader.syozokuSoshiki],          // 所属組織(コード値)
+        oasysNo:                  row[genkaColumnHeader.oasysNo],                 // OASYS発注書No
+        seikyusyoDaiyosyo:        row[genkaColumnHeader.seikyusyoDaiyosyo],       // 請求書代用書
+        seikyusyoNo:              row[genkaColumnHeader.seikyusyoNo],             // 請求書番号
+        shiharaiYoteibi:          row[genkaColumnHeader.shiharaiYoteibi],         // 支払予定日
+        shiharaiKingakuZeikomi:   row[genkaColumnHeader.shiharaiKingakuZeikomi],  // 支払金額（税込）
+        syohizeiCheck:            row[genkaColumnHeader.syohizeiCheck],           // 消費税ck項目
+        denpyoTekiyou:            row[genkaColumnHeader.denpyoTekiyou],           // 伝票摘要
+        sagyoHokokusyo:           row[genkaColumnHeader.sagyoHokokusyo],          // 作業報告書添付確認
+
+      };
+    }
+  });
+
+  // 親情報を子にコピー
+  pasteData.forEach(row => {
+
+    var key = row[genkaColumnHeader.kanrihyoCD_yojitsuNo_time];
+    var parent = groupMap[key];
+
+    if (parent) {
+
+      row[genkaColumnHeader.shiharaisakiCD]         = parent.shiharaisakiCD;
+      row[genkaColumnHeader.tourokuNo]              = parent.tourokuNo;
+      row[genkaColumnHeader.syozokuSoshiki]         = parent.syozokuSoshiki;
+      row[genkaColumnHeader.oasysNo]                = parent.oasysNo;
+      row[genkaColumnHeader.seikyusyoDaiyosyo]      = parent.seikyusyoDaiyosyo;
+      row[genkaColumnHeader.seikyusyoNo]            = parent.seikyusyoNo;
+      row[genkaColumnHeader.shiharaiYoteibi]        = parent.shiharaiYoteibi;
+      row[genkaColumnHeader.shiharaiKingakuZeikomi] = parent.shiharaiKingakuZeikomi;
+      row[genkaColumnHeader.syohizeiCheck]          = parent.syohizeiCheck;
+      row[genkaColumnHeader.denpyoTekiyou]          = parent.denpyoTekiyou;
+      row[genkaColumnHeader.sagyoHokokusyo]         = parent.sagyoHokokusyo;
+
+    }
+  });
+
+
+
+  //---------------------------  明細Noに連番を付与（スプレッドシートの関数では資産行は明細Noが採番されないため、明細Noが飛び飛びになってしまうためGASで採番しなおす）  ------------------------------------------------------
+
+  var groupCounter = {}; // グループごとのカウントを保持
+
+  pasteData.forEach(row => {
+    var groupKey = row[0]; // グループキー（インデックス0）
+
+    // グループのカウントを初期化またはインクリメント
+    if (!groupCounter[groupKey]) {
+      groupCounter[groupKey] = 1;
+    } else {
+      groupCounter[groupKey]++;
+    }
+
+    // インデックス20に連番をセット
+    row[genkaColumnHeader.meisaiNo] = groupCounter[groupKey];
+  });
+
+
+  //---------------------------  URLからファイルを取得してzip化  ------------------------------------------------------
+
+  var zipData = zipDataAll.filter(row => row[0] === 1 );
+
+  // toZipFile関数を実行
+  var keihiGenkaflg = "原価";
+  var zipResult = toZipFile( zipData, zipFolderId, keihiGenkaflg )
+
+
+  //---------------------------  RPAツールシートに書き出し  ------------------------------------------------------
+
+      // 原価シートの書き込み先の行を取得
+      var lastrowB;
+      var lastrowC;
+      var lastrow;      
+      var lastColumn = genkaSheet.getLastColumn(); // シートの最終列を取得
+      lastrowB = genkaSheet.getRange(genkaSheet.getMaxRows(), 2).getNextDataCell(SpreadsheetApp.Direction.UP).getRow();
+      lastrowC = genkaSheet.getRange(genkaSheet.getMaxRows(), 3).getNextDataCell(SpreadsheetApp.Direction.UP).getRow();
+
+      // B列とC列の最終行を比較して、B列の方が多ければB列を最終行として扱う（請求書と関連書類のリンクを貼るのにB列には最5行必要なため）
+      if(lastrowB > lastrowC){
+        lastrow = lastrowB
+      } else {
+        lastrow = lastrowC
+      }
+
+      // 区切り行をグレーで色付け
+      genkaSheet.getRange(lastrow + 1, 1, 1, lastColumn).setBackground('#efefef');
+
+      // RPAツールシートに書き込み
+      genkaSheet.getRange(lastrow + 2, 3, pasteData.length, pasteData[0].length).setValues(pasteData);
+      genkaSheet.getRange(lastrow + 2, 2).setValue(zipResult.seikyuZipFileName);
+      genkaSheet.getRange(lastrow + 3, 2).setValue(zipResult.seikyuZIP);
+      genkaSheet.getRange(lastrow + 5, 2).setValue(zipResult.kanrenZipFileName);
+      // genkaSheet.getRange(lastrow + 6, 2).setValue(zipResult.kanrenZIP);
+      if( zipResult.kanrenZIP ){
+        genkaSheet.getRange(lastrow + 6, 2).setValue(zipResult.kanrenZIP);
+      } else {
+        genkaSheet.getRange(lastrow + 6, 2).setValue('※関連書類ファイルはありません。');
+      }
+
+
+
+
+  if(!keihiCyakusyuFlg){
+    
+    // 
+    var uniqueKeys = [...new Set(filterData.map(row => row[inputColumnHeader.kanrihyoCD_yojitsuNo_time]))];
+
+    var genkaCyakusyuFlg = inputDataAll.map(row => {
+
+      var tempFlg;
+
+      // すでに "着手" ならそのまま
+      if (row[inputColumnHeader.cyakusyuFlg] === "着手") {
+
+        tempFlg = row[inputColumnHeader.cyakusyuFlg];
+
+      } else if (uniqueKeys.includes(row[inputColumnHeader.kanrihyoCD_yojitsuNo_time])) {   // キーが一致していれば "着手" をセット
+
+        tempFlg = "着手";
+
+      } else {            // それ以外は元の値をそのまま
+
+        tempFlg = row[inputColumnHeader.cyakusyuFlg];
+
+      }
+
+      return [tempFlg];
+
+    });
+
+    return genkaCyakusyuFlg;
+
+  }
+
+}
+
+＃zip化.gs
+function toZipFile( zipData, zipFolderId, keihiGenkaflg ) {
+
+  var zipFolder = DriveApp.getFolderById(zipFolderId);
+  var seikyuBlobs = [];
+  var kanrenBlobs = [];
+
+  // 各行を処理
+  zipData.forEach(row => {
+    // 請求書URL（インデックス11）
+
+    var seikyuUrl = row[1];
+    var seikyuId = extractFileId(seikyuUrl);
+
+    if (seikyuId) {
+      try {
+        var file = DriveApp.getFileById(seikyuId);
+        seikyuBlobs.push(file.getBlob().setName(file.getName()));
+      } catch (e) {
+        Logger.log(`請求書ファイル取得失敗: ${seikyuUrl}`);
+      }
+    }
+
+    // その他URL（インデックス39〜42）
+    for (let i = 2; i <= 5; i++) {
+      var fileUrl = row[i];
+      var fileId = extractFileId(fileUrl);
+      if (fileId) {
+        try {
+          var file = DriveApp.getFileById(fileId);
+          kanrenBlobs.push(file.getBlob().setName(file.getName()));
+        } catch (e) {
+          Logger.log(`その他ファイル取得失敗: ${fileUrl}`);
+        }
+      }
+    }
+  });
+
+  // 日時を取得して整形（yyyymmddhhMMss）
+  var now = new Date();
+  var formattedTime = Utilities.formatDate(now, "Asia/Tokyo", "yyyyMMddHHmmss");
+
+  if( keihiGenkaflg === '経費' ){
+
+    var seikyuZipFileName = `請求書（経費）-${formattedTime}`;
+    var kanrenZipFileName = `関連書類（経費）-${formattedTime}`;
+    // ZIPファイル作成とアップロード（ファイル名：原価-yyyymmddhhMMss.zip）
+    if( seikyuBlobs.length > 0 ) {
+      var seikyuZipFile = zipFolder.createFile(Utilities.zip(seikyuBlobs, `請求書（経費）-${formattedTime}.zip`));
+      var seikyuZIP = seikyuZipFile.getUrl(); // URLを格納
+    }
+
+    if( kanrenBlobs.length > 0 ) {
+      var kanrenZipFile = zipFolder.createFile(Utilities.zip(kanrenBlobs, `関連書類（経費）-${formattedTime}.zip`));
+      var kanrenZIP = kanrenZipFile.getUrl(); // URLを格納
+    }
+
+  } else if( keihiGenkaflg === '原価' ){
+
+    var seikyuZipFileName = `請求書（原価）-${formattedTime}`;
+    var kanrenZipFileName = `関連書類（原価）-${formattedTime}`;
+
+    // ZIPファイル作成とアップロード（ファイル名：原価-yyyymmddhhMMss.zip）
+    if( seikyuBlobs.length > 0 ) {
+      var seikyuZipFile = zipFolder.createFile(Utilities.zip(seikyuBlobs, `請求書（原価）-${formattedTime}.zip`));
+      var seikyuZIP = seikyuZipFile.getUrl(); // URLを格納
+    }
+
+    if( kanrenBlobs.length > 0 ) {
+      var kanrenZipFile = zipFolder.createFile(Utilities.zip(kanrenBlobs, `関連書類（原価）-${formattedTime}.zip`));
+      var kanrenZIP = kanrenZipFile.getUrl(); // URLを格納
+    }
+
+    
+  }
+
+  return { seikyuZIP, kanrenZIP, seikyuZipFileName, kanrenZipFileName };
+  
+}
+
+
+
+
+
+// GoogleドライブのURLからファイルIDを抽出する関数
+function extractFileId(fileUrl) {
+
+  var match = fileUrl && fileUrl.match(/[-\w]{25,}/);
+  return match ? match[0] : null;
+
+}
+
+
+はい、承知いたしました。提供されたGoogle Apps Script（GAS）の内容を解析し、その目的と処理の流れを分かりやすく解説します。
+
+---
+
+### このスクリプトの全体的な目的
+
+この一連のスクリプトは、**「支払依頼ファイル」というGoogleスプレッドシートに入力されたデータを、RPA（Robotic Process Automation）ツールが読み込める形式に自動で加工・整形するためのもの**です。
+
+具体的には、元のデータシートから特定の条件に合う「経費」と「原価」のデータを抽出し、それぞれ別の専用シート（「RPAツール（経費）」、「RPAツール（原価）」）に書き出します。
+
+さらに、データに記載されている請求書などのURLから実際のファイルをGoogleドライブ上で探し出し、**自動でZIPファイルにまとめてくれる機能**も備わっています。
+
+---
+
+### 各スクリプトファイルの役割
+
+この自動化処理は、役割ごとに3つのファイルに分かれています。
+
+| ファイル名 | 主な役割 |
+| :--- | :--- |
+| **`＃RPAデータ作成（経費）.gs`** | 「**経費**」に関するデータを抽出し、RPA用に加工して専用シートに書き出す。 |
+| **`＃RPAデータ作成（原価）.gs`** | 「**原価**」に関するデータを抽出し、RPA用に加工して専用シートに書き出す。 |
+| **`＃zip化.gs`** | 上記2つの処理から呼び出される**共通パーツ**。URLからファイルを探し出し、ZIPファイルを作成する。 |
+
+---
+
+### 主な処理の流れ
+
+経費・原価の処理は非常によく似た流れで行われます。ここでは「経費」の処理を例に、ステップごとに解説します。
+
+#### ステップ1：データの準備と抽出 📥
+
+1.  **スプレッドシートを開く**: 指定されたIDの「支払依頼ファイル」スプレッドシートにアクセスします。
+2.  **必要なシートを取得**: 「入力」シート、「RPAツール（経費）」シート、「設定」シートなどをプログラム上で扱えるようにします。
+3.  **処理対象データを絞り込む**: 「入力」シートの9行目以降の全データの中から、以下の**すべての条件**を満たす行だけを抽出します。
+    * `RPA処理対象` 列が "処理対象" になっている
+4.  **「経費」データのみを仕分ける**: 抽出したデータの中から、`原価フラグ` 列が "原価以外" となっているデータだけを最終的な処理対象（`keihiData`）とします。
+
+#### ステップ2：データの加工と整形 ✍️
+
+RPAツールが読みやすいように、抽出したデータを1行ずつループしながら加工していきます。
+
+* **項目の転記**: 元データの特定の列（例：支払先CD、請求書番号）を、RPA用シートの決められた列に転記します。どの列からどの列へ移すかは、`inputColumnHeader`と`keihiColumnHeader`という対応表で管理されています。
+* **値の変換・追加**:
+    * 管理表CDに応じて、特定の電話番号を自動で設定します。
+    * 「請求書代用書」や「立替」にチェックが入っている場合、`"Yes"`という文字列に変換します。
+    * 経費タイプをコードから名称に変換します。
+    * 依頼組織コードなど、固定の値を自動で入力します。
+
+#### ステップ3：ヘッダー情報のコピーと明細番号の整理 📋
+
+複数の明細行を持つデータ（例：1枚の請求書に3つの品目が記載されている場合）をきれいに整えます。
+
+1.  **共通情報をコピー**: 1行目の明細（親データ）にしか入力されていない支払先情報や支払予定日などを、2行目以降の明細（子データ）にすべてコピーします。これにより、すべての明細行に同じ共通情報がセットされます。
+2.  **明細番号を振り直す**: 明細番号をグループごとに「1, 2, 3...」とキレイな連番に振り直します。
+
+#### ステップ4：添付ファイルのZIP化 📁
+
+1.  **`toZipFile`関数を呼び出す**: データに含まれる請求書や作業報告書のURLを`zip化.gs`に渡します。
+2.  **ファイルを収集**: `toZipFile`関数は、URLからGoogleドライブのファイルIDを特定し、ファイルの実体（Blob）を取得します。
+3.  **ZIP圧縮**: 収集したファイルを「請求書」と「関連書類」の2つのZIPファイルに圧縮します。ファイル名は「請求書（経費）-20251027153000.zip」のように、実行日時が自動で付与されます。
+4.  **結果を返す**: 作成したZIPファイルの**名前**と**URL**を返します。
+
+#### ステップ5：シートへの書き込みと完了処理 ✅
+
+1.  **最終行を取得**: 「RPAツール（経費）」シートのどこから書き込むべきか、データの最終行を探します。
+2.  **区切り線を追加**: 前回の実行データとの間にグレーの区切り線を挿入し、見やすくします。
+3.  **データを書き込む**: 加工したデータ（ステップ2, 3）と、作成したZIPファイルの情報（ステップ4）をシートに一括で書き込みます。
+4.  **着手フラグを更新**: 最後に、処理が完了した元の「入力」シートのデータに対して、「着手済フラグ」列を "着手" に更新するための情報を返し、処理を終了します。
+
+---
+
+### まとめ
+
+このGASは、**人間が手作業で行っていたデータチェック、転記、整形、ファイル収集・圧縮という一連の面倒な作業を自動化**し、RPAがすぐに処理を開始できる状態を準備するための、非常に効率的な仕組みと言えます。
+
+
+以下もRPA用データ作成のGASなのですが、仕組みはほとんど一緒でしょうか。
+
+function executionRPA() {
+
+  var start = Browser.msgBox("RPA用のデータを作成します。よろしいですか？\\n※処理に1～2分程度かかります。",Browser.Buttons.OK_CANCEL);
+
+  if( start !== "ok" ){
+    return;
+  }
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var shiharaiIraiFileID = ss.getId(); // 支払依頼WSファイルのIDを取得
+  var inputSheet = ss.getSheetByName("入力");
+
+//---------- GASの処理中の行追加を防ぐため、［着手済みフラグ（DX列）］に保護をかける ----------
+
+  // 保護範囲を指定
+  // var protectionRange = ss.getRange("DX8:DX");
+
+  // 保護を設定
+  // var protection = protectionRange.protect().setDescription("RPA用データ作成のGASの処理中は行追加できません。数分間お待ちください。")
+  // protection.setWarningOnly(false); // 「警告」ではなく入力拒否を設定
+
+  // 保護権限を設定
+  // var allowedUsers = ["ptp-pj-jimukyoku@rtc-rcloud.jp"];  // 事務局のみ編集権限を付与
+  // allowedUsers.forEach(email => protection.addEditor(email));
+
+  // 保護権限者以外を除外
+  // protection.getEditors().forEach(user => {
+  //   if (!allowedUsers.includes(user.getEmail())) {
+  //     protection.removeEditor(user);
+  //   }
+  // });
+
+
+//---------- RPAデータ作成の実行 -----------------------------------------------------
+
+  // 経費用RPAデータの作成
+  var keihiCyakusyuFlg = createRPA.createKeihiRPA( shiharaiIraiFileID );
+
+
+
+  // 原価用RPAデータの作成
+  var genkaCyakusyuFlg = createRPA.createGenkaRPA( shiharaiIraiFileID, keihiCyakusyuFlg );
+
+
+
+  // DX8:DXに書き込み
+  if(keihiCyakusyuFlg){
+
+    var numRows = keihiCyakusyuFlg.length;
+    inputSheet.getRange(9, 127 + 1, numRows, 1).setValues(keihiCyakusyuFlg);
+
+  } else if(genkaCyakusyuFlg) {
+
+    var numRows = genkaCyakusyuFlg.length;
+    inputSheet.getRange(9, 127 + 1, numRows, 1).setValues(genkaCyakusyuFlg);
+
+  } else {
+
+    var start = Browser.msgBox("処理対象の案件がありませんでした。",Browser.Buttons.OK);
+    protection.remove();
+    return;
+
+  }
+
+
+//---------- 保護を解除 -------------------------------------------------------------
+
+  // protection.remove();
+
+  var start = Browser.msgBox("処理が完了しました。\\nRPAツールシートをご確認ください。",Browser.Buttons.OK);
+
+
+}
+
+
+はい、ご提示いただいた`executionRPA`関数のコードを拝見しました。
+
+結論から言うと、これは以前のスクリプトと**仕組みが同じではありません**。役割が明確に異なります。
+
+一言でいうと、今回の`executionRPA`関数は、以前解析したデータ作成処理（`createKeihiRPA`と`createGenkaRPA`）を**呼び出して実行するための「司令塔」や「実行ボタン」の役割**を担っています。
+
+---
+
+### 役割の違い
+
+以前のスクリプトと今回のスクリプトの関係は、レストランの厨房に例えると分かりやすいです。
+
+* **前回解析したスクリプト (`createKeihiRPA`, `createGenkaRPA`)** 👨‍🍳
+    * **役割:** **専門のシェフ**。
+    * 「経費」や「原価」という特定の料理（データ加工）を黙々とこなす実務担当者です。
+
+* **今回ご提示のスクリプト (`executionRPA`)** 🤵
+    * **役割:** **フロアマネージャー**。
+    * お客様（ユーザー）から注文（実行指示）を受け、厨房のシェフに「経費と原価の料理を作って」と指示を出し、完成したらお客様に報告する、全体の流れを管理する役割です。
+
+---
+
+### `executionRPA` 関数の具体的な処理の流れ
+
+このスクリプトは、以下の順番で処理を進めます。
+
+1.  **【ユーザーへの確認】** 🙋‍♂️
+    * `Browser.msgBox`を使い、「RPA用のデータを作成します。よろしいですか？」という確認ダイアログを表示します。ユーザーが「OK」を押さない限り、処理は始まりません。
+
+2.  **【データ作成の実行指示】** 🚀
+    * **① 経費データの作成**: まず、`createKeihiRPA`関数を呼び出し、経費データの作成を指示します。
+    * **② 原価データの作成**: 次に、`createGenkaRPA`関数を呼び出し、原価データの作成を指示します。
+
+3.  **【結果の書き込み】** ✍️
+    * `createKeihiRPA`や`createGenkaRPA`の処理が完了すると、どのデータが処理されたかを示す「着手フラグ」のリストが返ってきます。
+    * この「着手フラグ」のリストを、元の「入力」シートの該当する行に書き込み、「処理済み」の印をつけます。
+
+4.  **【ユーザーへの完了報告】** ✅
+    * すべての処理が終わったら、「処理が完了しました。」という完了ダイアログを表示してユーザーに知らせます。
+    * もし処理対象のデータが1件もなかった場合も、「処理対象の案件がありませんでした。」と教えてくれます。
+
+### 補足：コメントアウトされている「保護機能」について
+
+コードの中に `//` で始まる行がたくさんありますが、これらは現在無効化（コメントアウト）されています。
+
+これは元々、**GASが処理を実行している数分間、他のユーザーが誤ってシートを編集してしまわないように、一時的にシートをロック（保護）する機能**があったことを示しています。データの整合性を保つための安全機能です。
+
+
+
+
+はい、そのご理解で完全に正しいです。まさにその通りです！👍
+
+ユーザーがスプレッドシート上でメニューやボタンから `executionRPA` を実行すると、それが司令塔となって、裏で待機している専門の処理部隊（`createKeihiRPA` や `createGenkaRPA`）を呼び出して、一連の作業が自動的に進んでいくという流れになっています。
+
+---
+
+## 役割分担のメリット
+
+このように「実行役」と「実務役」の役割を分けるのは、プログラミングにおいて非常に一般的で優れた方法です。
+
+* **分かりやすさ**: 「実行ボタン」の役割を持つスクリプトは、処理全体の流れだけを管理すれば良いため、コードがシンプルになります。
+* **修正のしやすさ**: 例えば、将来的に経費データの加工ルールだけを変更したくなった場合、「実務役」である `createKeihiRPA` のファイルだけを修正すればよく、「実行役」のスクリプトに影響を与えません。
+
+このように役割を分けることで、メンテナンスがしやすく、エラーが起きにくい、見通しの良いプログラムになります。
