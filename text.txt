@@ -1,0 +1,308 @@
+{
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "c9789da2-1840-46e0-9900-4f6ca7a3cc2d",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        144,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "const raw = items[0].json.data;\n\nreturn [\n  {\n    json: {\n      script_case: raw\n    }\n  }\n];\n"
+      },
+      "id": "d3fffa38-5e03-4265-8814-cec3b5903656",
+      "name": "Parse Test Case",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        816,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "bucketName": "n8n-agent-files-2025",
+        "fileKey": "TestScriptCheck/Input/case1.txt"
+      },
+      "type": "n8n-nodes-base.awsS3",
+      "typeVersion": 2,
+      "position": [
+        368,
+        -16
+      ],
+      "id": "ab6a7fc9-f481-48a4-932c-3e00cffa9b2c",
+      "name": "Download a file",
+      "credentials": {
+        "aws": {
+          "id": "7uOrdNJOqOcYT2iz",
+          "name": "AWS account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "text",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        592,
+        -16
+      ],
+      "id": "8fa495cf-8028-481f-9b54-e185715b5192",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=あなたは「業務フロー × テスト仕様書」を専門にレビューする\nシニアQAエンジニアAIです。\n\nあなたの役割は、\n「定義済みの業務観点」が\n「テスト仕様書により検証されているか」を\n厳密・保守的に判定することです。\n\n────────────────────\n■ 入力情報\n────────────────────\n\n【観点情報】\n- 観点ID: {{ $json.id }}\n- カテゴリ: {{ $json.category }}\n- 説明: {{ $json.description }}\n- 重要度: {{ $json.criticality }}\n\n【業務フロー（正解モデル）】\n以下は、業務イベントとデータ状態遷移を定義した正解フローです。\n観点はこのフローを前提に評価してください。\n\n{{ $json.mermaidFlow_withID }}\n\n【テスト仕様書】\n以下は実装に対するテスト仕様です。\n書かれている内容のみを根拠として判定してください。\n\n{{ $json.script_case }}\n\n────────────────────\n■ 判定ルール（厳守）\n────────────────────\n\n1. 判定は必ず以下の3択\n   - COVERED        : 観点の内容が明確にテストされている\n   - PARTIAL        : 一部は確認できるが、観点を満たすには不十分\n   - NOT_COVERED    : 観点に対応するテストが存在しない\n\n2. 推測は禁止\n   - 「おそらく」「暗黙的に」「一般的に」は使用不可\n   - テスト仕様書に書いていない内容は NOT_COVERED とする\n\n3. evidence（証拠）\n   - テスト仕様書からの原文引用のみ\n   - 引用できない場合は空文字 \"\"\n\n4. reason（理由）\n   - 観点説明とテスト記述を比較した論理的説明\n   - 業務フロー上の位置づけも踏まえること\n\n5. suggestion（改善提案）\n   - 以下の場合は必須\n     - coverage = NOT_COVERED かつ criticality = High\n   - それ以外は空文字でよい\n   - suggestion は「追加すべきテスト観点・条件」を具体的に記載\n\n────────────────────\n■ 出力形式（厳守・JSONのみ）\n────────────────────\n{\n  \"id\": \"{{ $json.id }}\",\n  \"category\": {{ $json.category }}\n  \"description\": {{ $json.description }}\n  \"coverage\": \"COVERED | PARTIAL | NOT_COVERED\",\n  \"evidence\": \"テスト仕様書からの引用（なければ空）\",\n  \"reason\": \"判定理由（業務フローとの対応関係を含める）\",\n  \"suggestion\": \"不足時の改善提案（不要なら空）\"\n}\n\nだたし、出力に関して以下のルールは厳守してください。\n■ JSON出力に関する厳守ルール（最重要）\n- 出力は必ず「1オブジェクトのみ」の JSON\n- 文字列内に生改行を含めてはいけない\n- 改行が必要な場合は必ず \"\\\\n\" を使用する\n- 箇条書きも \"\\\\n1. ... \\\\n2. ...\" の形式で表現する\n- Markdown・コードブロックは禁止",
+        "options": {}
+      },
+      "id": "90553d63-47d7-4d64-8e4a-85abbe5ad384",
+      "name": "Coverage Judge AI",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2,
+      "position": [
+        1488,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = items[0].json;\n\n// ID_master を正規化（文字列 → 配列）\nlet idMasterRaw = input.ID_master;\nlet idMaster;\n\nif (Array.isArray(idMasterRaw)) {\n  idMaster = idMasterRaw;\n} else if (typeof idMasterRaw === \"string\") {\n  try {\n    idMaster = JSON.parse(idMasterRaw);\n  } catch (e) {\n    throw new Error(\"ID_master is string but JSON.parse failed\");\n  }\n} else {\n  throw new Error(\"ID_master is missing or invalid type\");\n}\n\n// 他必須項目チェック\nif (!input.mermaidFlow_withID) {\n  throw new Error(\"mermaidFlow_withID is missing\");\n}\nif (!input.script_case) {\n  throw new Error(\"script_case is missing\");\n}\n\n// 1観点 = 1アイテムに正規化\nreturn idMaster.map(vp => ({\n  json: {\n    id: vp.id,\n    category: vp.category,\n    phase: vp.phase,\n    description: vp.description,\n    criticality: vp.criticality,\n\n    mermaidFlow_withID: input.mermaidFlow_withID,\n    script_case: input.script_case\n  }\n}));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1264,
+        -16
+      ],
+      "id": "0eeffe6b-1c65-43bb-a782-144c2f28efea",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "model": "anthropic.claude-3-5-sonnet-20240620-v1:0",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAwsBedrock",
+      "typeVersion": 1.1,
+      "position": [
+        1568,
+        208
+      ],
+      "id": "0023d4cd-8cda-4179-a056-b2f49f03d326",
+      "name": "AWS Bedrock Chat Model4",
+      "credentials": {
+        "aws": {
+          "id": "7uOrdNJOqOcYT2iz",
+          "name": "AWS account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * AIエージェントの output(JSON文字列) を\n * Excel出力用の1行オブジェクトに変換する（実戦安定版）\n */\n\nreturn items.map(item => {\n  const raw = item.json.output;\n\n  try {\n    // ① まずはそのまま JSON.parse（正規ケース）\n    const parsed = JSON.parse(raw);\n\n    return {\n      json: {\n        id: parsed.id ?? \"\",\n        category: parsed.category ?? \"\",\n        description: parsed.description ?? \"\",\n        coverage: parsed.coverage ?? \"\",\n        evidence: parsed.evidence ?? \"\",\n        reason: parsed.reason ?? \"\",\n        suggestion: parsed.suggestion ?? \"\"\n      }\n    };\n\n  } catch (e1) {\n    try {\n      // ② 失敗した場合のみ、生改行救済\n      const fixed = raw\n        .trim()\n        .replace(/\\r?\\n/g, \"\\\\n\");\n\n      const parsed = JSON.parse(fixed);\n\n      return {\n        json: {\n          id: parsed.id ?? \"\",\n          category: parsed.category ?? \"\",\n          description: parsed.description ?? \"\",\n          coverage: parsed.coverage ?? \"\",\n          evidence: parsed.evidence ?? \"\",\n          reason: parsed.reason ?? \"\",\n          suggestion: parsed.suggestion ?? \"\"\n        }\n      };\n\n    } catch (e2) {\n      // ③ それでも無理なら ERROR 行\n      return {\n        json: {\n          id: \"\",\n          category: \"\",\n          description: \"\",\n          coverage: \"ERROR\",\n          evidence: \"\",\n          reason: \"AI output parse failed\",\n          suggestion: \"\",\n          raw_output: raw\n        }\n      };\n    }\n  }\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1840,
+        -16
+      ],
+      "id": "73395f7d-4818-433b-a9ec-d99ef11226a6",
+      "name": "解析と配列展開1"
+    },
+    {
+      "parameters": {
+        "operation": "toFile",
+        "fileFormat": "xlsx",
+        "options": {
+          "fileName": "=result_{{ $now }}.xlsx",
+          "sheetName": "AIレビュー結果"
+        }
+      },
+      "type": "n8n-nodes-base.spreadsheetFile",
+      "typeVersion": 2,
+      "position": [
+        2064,
+        -16
+      ],
+      "id": "ba1b2609-d637-4c85-8f80-905c99818de6",
+      "name": "Excelに変換1"
+    },
+    {
+      "parameters": {
+        "operation": "upload",
+        "bucketName": "n8n-agent-files-2025",
+        "fileName": "=TestScriptCheck/Output/case_result_{{ $now }}.xlsx",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.awsS3",
+      "typeVersion": 2,
+      "position": [
+        2288,
+        -16
+      ],
+      "id": "9a5bde0c-8410-4018-b843-aae8a18fef36",
+      "name": "Upload to S",
+      "credentials": {
+        "aws": {
+          "id": "7uOrdNJOqOcYT2iz",
+          "name": "AWS account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fields": {
+          "values": [
+            {
+              "name": "mermaidFlow_withID",
+              "stringValue": "=flowchart TD\n\n%% ===== 起点 =====\nSTART((START))\n\nSTART --> V01[【V01】本調査データ存在判定]\n\n%% ===== 本調査完了・報告日登録 =====\nV01 -->|本調査あり| V02[【V02】報告日登録（夜間）]\nV02 --> V03[【V03】前回調査データ更新]\nV02 --> V04[【V04】本調査データ更新]\nV02 --> V05[【V05】次回期間外データ作成]\nV02 --> V06[【V06】退避データ削除]\n\n%% ===== 受注 =====\nV05 --> V07[【V07】受注受付]\nV07 --> V08{【V08】退避データ有無}\nV08 -->|なし| V09[【V09】退避データ作成]\nV08 -->|あり| V10[【V10】退避作成スキップ]\n\n%% ===== 割当 =====\nV07 --> V11[【V11】割当受付]\nV11 --> V12{【V12】受注前割当か}\nV12 -->|通常| V13[【V13】期間外→本調査コピー]\nV12 -->|受注追越| V14[【V14】退避＋本調査同時作成]\n\n%% ===== 差分比較 =====\nV13 --> V15[【V15】差分比較処理]\nV14 --> V15\n\n%% ===== CCR完了 =====\nV15 --> V16[【V16】CCR完了受付]\nV16 --> V17[【V17】写し仕様データ作成（ワーク）]\n\n%% ===== 受注取消 =====\nV07 --> V18[【V18】受注取消]\nV18 --> V19[【V19】退避→期間外反映]\nV19 --> V20[【V20】退避データ削除]\n\n%% ===== 割当取消 =====\nV11 --> V21[【V21】割当取消]\nV21 --> V22[【V22】本調査→期間外反映]\nV22 --> V23[【V23】本調査データ削除]\n\n%% ===== 一部訂正 =====\nV01 --> V24[【V24】一部訂正指示]\nV24 --> V25[【V25】一部訂正データ作成]\nV25 --> V26{【V26】一部訂正操作}\nV26 -->|取消| V27[【V27】一部訂正削除]\nV26 -->|完了| V28[【V28】一部訂正完了]\nV28 --> V29[【V29】時点反映＋ワーク削除]\n\n%% ===== 夜間反映 =====\nV29 --> V30{【V30】期間外更新有無}\nV30 -->|なし| V31[【V31】期間外へ一部訂正反映]\nV30 -->|あり| V32[【V32】期間外反映スキップ]\n\n%% ===== システム割込 =====\nV11 --> V33[【V33】システム割込制御]\n\nEND((END))"
+            },
+            {
+              "name": "ID_master",
+              "stringValue": "=[\n  { \"id\": \"V01\", \"category\": \"状態判定\", \"description\": \"本調査データの存在有無を正しく判定できること\", \"criticality\": \"High\" },\n  { \"id\": \"V02\", \"category\": \"バッチ\", \"description\": \"報告日登録（夜間）で本調査完了処理が実行されること\", \"criticality\": \"High\" },\n  { \"id\": \"V03\", \"category\": \"データ更新\", \"description\": \"前回調査データが条件通り更新されること\", \"criticality\": \"Medium\" },\n  { \"id\": \"V04\", \"category\": \"データ更新\", \"description\": \"本調査データが完報条件で更新されること\", \"criticality\": \"High\" },\n  { \"id\": \"V05\", \"category\": \"データ生成\", \"description\": \"次回調査用の期間外データが正しく作成されること\", \"criticality\": \"High\" },\n  { \"id\": \"V06\", \"category\": \"データ削除\", \"description\": \"退避データが不要時に削除されること\", \"criticality\": \"Medium\" },\n  { \"id\": \"V07\", \"category\": \"イベント\", \"description\": \"受注イベントを正しく受付できること\", \"criticality\": \"High\" },\n  { \"id\": \"V08\", \"category\": \"分岐\", \"description\": \"退避データ有無で処理分岐できること\", \"criticality\": \"High\" },\n  { \"id\": \"V09\", \"category\": \"データ生成\", \"description\": \"受注時点の退避データを作成できること\", \"criticality\": \"High\" },\n  { \"id\": \"V10\", \"category\": \"制御\", \"description\": \"既存退避データがある場合は再作成しないこと\", \"criticality\": \"Low\" },\n  { \"id\": \"V11\", \"category\": \"イベント\", \"description\": \"割当イベントを正しく処理できること\", \"criticality\": \"High\" },\n  { \"id\": \"V12\", \"category\": \"分岐\", \"description\": \"受注前割当と通常割当を判別できること\", \"criticality\": \"High\" },\n  { \"id\": \"V13\", \"category\": \"データ生成\", \"description\": \"期間外から本調査データを作成できること\", \"criticality\": \"High\" },\n  { \"id\": \"V14\", \"category\": \"データ生成\", \"description\": \"受注追越時に退避と本調査を同時作成できること\", \"criticality\": \"High\" },\n  { \"id\": \"V15\", \"category\": \"整合性\", \"description\": \"割当中の差分比較処理で不整合を防止できること\", \"criticality\": \"High\" },\n  { \"id\": \"V16\", \"category\": \"イベント\", \"description\": \"CCR完了イベントを正しく処理できること\", \"criticality\": \"High\" },\n  { \"id\": \"V17\", \"category\": \"データ生成\", \"description\": \"写し仕様データ（ワーク）を作成できること\", \"criticality\": \"Medium\" },\n  { \"id\": \"V18\", \"category\": \"イベント\", \"description\": \"受注取消イベントを処理できること\", \"criticality\": \"High\" },\n  { \"id\": \"V19\", \"category\": \"データ復元\", \"description\": \"退避データを期間外に正しく反映できること\", \"criticality\": \"High\" },\n  { \"id\": \"V20\", \"category\": \"データ削除\", \"description\": \"受注取消後に退避データを削除できること\", \"criticality\": \"Medium\" },\n  { \"id\": \"V21\", \"category\": \"イベント\", \"description\": \"割当取消イベントを処理できること\", \"criticality\": \"High\" },\n  { \"id\": \"V22\", \"category\": \"データ反映\", \"description\": \"本調査データを期間外に反映できること\", \"criticality\": \"High\" },\n  { \"id\": \"V23\", \"category\": \"データ削除\", \"description\": \"割当取消後に本調査データを削除できること\", \"criticality\": \"High\" },\n  { \"id\": \"V24\", \"category\": \"イベント\", \"description\": \"一部訂正指示を正しく受付できること\", \"criticality\": \"High\" },\n  { \"id\": \"V25\", \"category\": \"データ生成\", \"description\": \"一部訂正データをワークに作成できること\", \"criticality\": \"High\" },\n  { \"id\": \"V26\", \"category\": \"分岐\", \"description\": \"一部訂正の取消／完了を判別できること\", \"criticality\": \"High\" },\n  { \"id\": \"V27\", \"category\": \"データ削除\", \"description\": \"一部訂正取消時にワークを削除できること\", \"criticality\": \"Medium\" },\n  { \"id\": \"V28\", \"category\": \"イベント\", \"description\": \"一部訂正完了処理を実行できること\", \"criticality\": \"High\" },\n  { \"id\": \"V29\", \"category\": \"データ反映\", \"description\": \"一部訂正結果を時点へ反映しワークを削除できること\", \"criticality\": \"High\" },\n  { \"id\": \"V30\", \"category\": \"分岐\", \"description\": \"期間外更新有無を判定できること\", \"criticality\": \"Medium\" },\n  { \"id\": \"V31\", \"category\": \"バッチ\", \"description\": \"夜間で期間外へ一部訂正を反映できること\", \"criticality\": \"Medium\" },\n  { \"id\": \"V32\", \"category\": \"制御\", \"description\": \"期間外に更新がある場合は反映しないこと\", \"criticality\": \"Low\" },\n  { \"id\": \"V33\", \"category\": \"排他制御\", \"description\": \"イベントごとのシステム割込登録・解除が正しいこと\", \"criticality\": \"High\" }\n]"
+            },
+            {
+              "name": "script_case",
+              "stringValue": "={{ $json.script_case }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "4fa1e8f6-67cd-4739-a1b9-d246307e0571",
+      "name": "📜 フロー・観点マスター定義1",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [
+        1056,
+        -16
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Download a file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Test Case": {
+      "main": [
+        [
+          {
+            "node": "📜 フロー・観点マスター定義1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download a file": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Parse Test Case",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Coverage Judge AI": {
+      "main": [
+        [
+          {
+            "node": "解析と配列展開1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Coverage Judge AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AWS Bedrock Chat Model4": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Coverage Judge AI",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "解析と配列展開1": {
+      "main": [
+        [
+          {
+            "node": "Excelに変換1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Excelに変換1": {
+      "main": [
+        [
+          {
+            "node": "Upload to S",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📜 フロー・観点マスター定義1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "f6d65182ba1f6658f022243e6d2a2af6ebfd4c99def2748059350259602156f5"
+  }
+}
