@@ -1,0 +1,1542 @@
+#sendAllWithWebhook.gs
+/*
+n8n用のデータを加工し、請求書単位でn8nに送信
+JSON形式で請求書情報を入力シート（現在の名称は複数明細）から
+シートの構成の情報が書かれたコンフィグ
+*/
+function sendAllWithWebhook(){
+  // --- 基本設定 ---
+
+  const WEBHOOK_URL = 'https://app-n8n-nat-e2fmhrece2cbc7h8.japanwest-01.azurewebsites.net/webhook/receive-invoice-from-gas';
+  
+  const INVOICE_SHEET_NAME = '【山本追加】複数明細'; // シート名を変更
+  const CONFIG_SHEET_NAME = '【山本追加】コンフィグ';
+  
+  // --- コンフィグシートのセル設定（画像に合わせて修正） ---
+  const CFG_HEADER_ROW = 'D5'; // ヘッダー行番号
+  const CFG_START_ROW  = 'D7'; // 値開始行番号
+
+  const CFG_KEY_COL    = 'C9';  // 請求書キーの列 (例: B)
+  
+  const CFG_MAIN_START = 'C10'; // 請求書情報ヘッダー開始列 (例: C)
+  const CFG_MAIN_END   = 'C11'; // 請求書情報ヘッダー終了列 (例: N)
+  
+  const CFG_DTL_START  = 'C12'; // 明細情報ヘッダー開始列 (例: O)
+  const CFG_DTL_END    = 'C13'; // 明細情報ヘッダー終了列 (例: U)
+  
+  const CFG_URL_COL    = 'C14'; // URLの列 (例: V)
+
+ //山本追加分
+  const CFG_VRTI_START = 'C15';
+  const CFG_VRTI_END   = 'C16';
+ //end
+
+  // JSON出力時の固定キー名
+  const KEY_NAME_DETAILS = '明細';
+  const KEY_NAME_URLS    = 'URL';
+  // ----------------
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheetData = ss.getSheetByName(INVOICE_SHEET_NAME);
+  const sheetConfig = ss.getSheetByName(CONFIG_SHEET_NAME);
+
+  if (!sheetData || !sheetConfig) {
+    console.error("シートが見つかりません。シート名を確認してください。");
+    return;
+  }
+
+  // 1. コンフィグ情報の取得
+  const headerRow = sheetConfig.getRange(CFG_HEADER_ROW).getValue();
+  const startRow = sheetConfig.getRange(CFG_START_ROW).getValue();
+  
+  // 列定義の読み込み
+  const keyColStr = sheetConfig.getRange(CFG_KEY_COL).getValue().toString();
+  
+  const mainStart = sheetConfig.getRange(CFG_MAIN_START).getValue().toString();
+  const mainEnd   = sheetConfig.getRange(CFG_MAIN_END).getValue().toString();
+  const mainRangeStr = `${mainStart}:${mainEnd}`; // "C:N" の形式を作成
+  
+  const dtlStart  = sheetConfig.getRange(CFG_DTL_START).getValue().toString();
+  const dtlEnd    = sheetConfig.getRange(CFG_DTL_END).getValue().toString();
+  const dtlRangeStr = `${dtlStart}:${dtlEnd}`; // "O:U" の形式を作成
+
+  const urlColStr = sheetConfig.getRange(CFG_URL_COL).getValue().toString();
+
+  // --- 山本追加分：コンフィグ取得 ---
+  const vrtiStart = sheetConfig.getRange(CFG_VRTI_START).getValue().toString();
+  const vrtiEnd   = sheetConfig.getRange(CFG_VRTI_END).getValue().toString();
+  const vrtiRangeStr = `${vrtiStart}:${vrtiEnd}`; 
+  // ------------------------------
+
+  // バリデーション
+  const lastRow = sheetData.getLastRow();
+  const lastCol = sheetData.getLastColumn();
+  if (typeof startRow !== 'number' || startRow > lastRow || startRow < 1) {
+    console.log("送信対象のデータがありません。");
+    return;
+  }
+
+  // 2. 列番号の解析（A列→0, B列→1 に変換）
+  // ヘルパー関数: 列文字列("A"や"A:C")をインデックス配列([0]や[0,1,2])に変換
+  const parseColString = (str) => {
+    const parts = str.split(':');
+    const colToIdx = (char) => {
+      let idx = 0;
+      // 列名が2文字以上(AAなど)の場合にも対応
+      const cleanChar = char.trim().toUpperCase();
+      for (let i = 0; i < cleanChar.length; i++) {
+        idx = idx * 26 + cleanChar.charCodeAt(i) - 64;
+      }
+      return idx - 1; // 0-based index
+    };
+    
+    if (parts.length === 1) {
+      return [colToIdx(parts[0])];
+    } else if (parts.length === 2) {
+      const start = colToIdx(parts[0]);
+      const end = colToIdx(parts[1]);
+      const indices = [];
+      for (let i = start; i <= end; i++) indices.push(i);
+      return indices;
+    }
+    return [];
+  };
+
+  const keyIdx = parseColString(keyColStr)[0]; // 単一
+  const mainIndices = parseColString(mainRangeStr); // 配列
+  const dtlIndices = parseColString(dtlRangeStr);   // 配列
+  const urlIdx = parseColString(urlColStr)[0]; // 単一
+
+  // 3. データとヘッダーの取得
+  const headers = sheetData.getRange(headerRow, 1, 1, lastCol).getValues()[0];
+  const numRows = lastRow - startRow + 1;
+  const values = sheetData.getRange(startRow, 1, numRows, lastCol).getValues();
+
+  // --- 山本追加分：インデックス解析 ---
+  const vrtiIndices = parseColString(vrtiRangeStr);
+  // -------------------------------
+
+  // 4. グルーピング処理
+  const groupedData = {};
+
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    const currentRowNum = startRow + i;
+    
+    // キー取得
+    const groupKey = row[keyIdx];
+    
+    // キーが空の場合はスキップ
+    if (!groupKey) continue;
+
+    // グループ初期化
+    if (!groupedData[groupKey]) {
+      groupedData[groupKey] = {
+        meta: {
+          source_sheet: INVOICE_SHEET_NAME,
+          row_numbers: [],
+          timestamp: new Date().toISOString()
+        },
+        data: {}
+      };
+      
+      // 請求書キーのセット
+      if (headers[keyIdx]) {
+         groupedData[groupKey].data[headers[keyIdx]] = groupKey;
+      }
+
+      // 請求書情報（ルート項目）のセット
+      mainIndices.forEach(idx => {
+        if (headers[idx]) {
+           groupedData[groupKey].data[headers[idx]] = row[idx];
+        }
+      });
+
+      // --- 山本追加分：バリエーション情報をルート項目にセット ---
+      vrtiIndices.forEach(idx => {
+        if (headers[idx]) {
+           groupedData[groupKey].data[headers[idx]] = row[idx];
+        }
+      });
+      // ---------------------------------------------------
+
+      // 配列の初期化
+      groupedData[groupKey].data[KEY_NAME_DETAILS] = [];
+      groupedData[groupKey].data[KEY_NAME_URLS] = [];
+    }
+
+    // 行番号の記録
+    groupedData[groupKey].meta.row_numbers.push(currentRowNum);
+
+    // 明細情報の追加（オブジェクト作成）
+    const detailObj = {};
+    let hasDetail = false; // 明細データがあるかチェック用
+    dtlIndices.forEach(idx => {
+      if (headers[idx]) {
+        detailObj[headers[idx]] = row[idx];
+        if (row[idx] !== "") hasDetail = true; // 何かしら値があれば有効とする
+      }
+    });
+    // 明細情報が完全に空でなければ追加（要件に応じて調整可）
+    groupedData[groupKey].data[KEY_NAME_DETAILS].push(detailObj);
+
+    // URLの追加
+    if (row[urlIdx]) {
+      // URLの重複を防ぎたい場合は includes チェックを入れる
+      if (!groupedData[groupKey].data[KEY_NAME_URLS].includes(row[urlIdx])) {
+        groupedData[groupKey].data[KEY_NAME_URLS].push(row[urlIdx]);
+      }
+    }
+  }
+
+  // 5. 送信処理
+  const allGroups = Object.values(groupedData);
+  const getJstTime = () => new Date().toLocaleTimeString('en-US', {
+      timeZone: 'Asia/Tokyo', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3
+  });
+
+  console.log(`合計 ${allGroups.length} 件の請求書データを送信します。`);
+
+  for (const group of allGroups) {
+    group.data['処理開始'] = getJstTime();
+
+    const options = {
+      'method': 'post',
+      'contentType': 'application/json',
+      'payload': JSON.stringify(group)
+    };
+
+    try {
+      const response = UrlFetchApp.fetch(WEBHOOK_URL, options);
+      // キー情報を使ってログ出力
+      const keyName = headers[keyIdx] || "Key";
+      console.log(`Key: ${group.data[keyName]} (行数: ${group.meta.row_numbers.length}) 送信成功`);
+    } catch (e) {
+      console.error(`送信エラー: ${e.toString()}`);
+    }
+  }
+  
+  console.log("--- 完了 ---");
+
+}
+
+
+
+//こちら単体テスト用関数です現時点ではsendAllWithWebhook()と処理は同じです
+//機能改修をする時にまずこちらでテストするために使っていました。
+function sendAllWithWebhook_test()
+{
+  // --- 基本設定 ---
+
+  const WEBHOOK_URL = 'https://app-n8n-nat-e2fmhrece2cbc7h8.japanwest-01.azurewebsites.net/webhook-test/91b0ad9c-54cf-42f6-98f4-d38ccd50fda1';
+  
+  const INVOICE_SHEET_NAME = '【山本追加】複数明細'; // シート名を変更
+  const CONFIG_SHEET_NAME = '【山本追加】コンフィグ';
+  
+  // --- コンフィグシートのセル設定（画像に合わせて修正） ---
+  const CFG_HEADER_ROW = 'D5'; // ヘッダー行番号
+  const CFG_START_ROW  = 'D7'; // 値開始行番号
+
+  const CFG_KEY_COL    = 'C9';  // 請求書キーの列 (例: B)
+  
+  const CFG_MAIN_START = 'C10'; // 請求書情報ヘッダー開始列 (例: C)
+  const CFG_MAIN_END   = 'C11'; // 請求書情報ヘッダー終了列 (例: N)
+  
+  const CFG_DTL_START  = 'C12'; // 明細情報ヘッダー開始列 (例: O)
+  const CFG_DTL_END    = 'C13'; // 明細情報ヘッダー終了列 (例: U)
+  
+  const CFG_URL_COL    = 'C14'; // URLの列 (例: V)
+
+ //山本追加分
+  const CFG_VRTI_START = 'C15';
+  const CFG_VRTI_END   = 'C16';
+  const CFG_ALOC_START = 'C17'; 
+  const CFG_ALOC_END   = 'C18'; 
+ //end
+
+  // JSON出力時の固定キー名
+  const KEY_NAME_DETAILS = 'LineItems';
+  const KEY_NAME_ALLOCS  = 'Allocations';
+  const KEY_NAME_URLS    = 'URL';
+  const KEY_NAME_VRTI    = 'VendorRemitToIdentifier';
+  // ----------------
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheetData = ss.getSheetByName(INVOICE_SHEET_NAME);
+  const sheetConfig = ss.getSheetByName(CONFIG_SHEET_NAME);
+
+  if (!sheetData || !sheetConfig) {
+    console.error("シートが見つかりません。シート名を確認してください。");
+    return;
+  }
+
+  // 1. コンフィグ情報の取得
+  const headerRow = sheetConfig.getRange(CFG_HEADER_ROW).getValue();
+  const startRow = sheetConfig.getRange(CFG_START_ROW).getValue();
+  
+  // 列定義の読み込み
+  const keyColStr = sheetConfig.getRange(CFG_KEY_COL).getValue().toString();
+  
+  const mainStart = sheetConfig.getRange(CFG_MAIN_START).getValue().toString();
+  const mainEnd   = sheetConfig.getRange(CFG_MAIN_END).getValue().toString();
+  const mainRangeStr = `${mainStart}:${mainEnd}`; // "C:N" の形式を作成
+  
+  const dtlStart  = sheetConfig.getRange(CFG_DTL_START).getValue().toString();
+  const dtlEnd    = sheetConfig.getRange(CFG_DTL_END).getValue().toString();
+  const dtlRangeStr = `${dtlStart}:${dtlEnd}`; // "O:U" の形式を作成
+
+  const urlColStr = sheetConfig.getRange(CFG_URL_COL).getValue().toString();
+
+  // --- 山本追加分：コンフィグ取得 ---
+  const vrtiStart = sheetConfig.getRange(CFG_VRTI_START).getValue().toString();
+  const vrtiEnd   = sheetConfig.getRange(CFG_VRTI_END).getValue().toString();
+  const vrtiRangeStr = `${vrtiStart}:${vrtiEnd}`; 
+
+  const alocStart = sheetConfig.getRange(CFG_ALOC_START).getValue().toString();
+  const alocEnd   = sheetConfig.getRange(CFG_ALOC_END).getValue().toString();
+  const alocRangeStr = `${alocStart}:${alocEnd}`;
+  // ------------------------------
+
+  // バリデーション
+  const lastRow = sheetData.getLastRow();
+  const lastCol = sheetData.getLastColumn();
+  if (typeof startRow !== 'number' || startRow > lastRow || startRow < 1) {
+    console.log("送信対象のデータがありません。");
+    return;
+  }
+
+  // 2. 列番号の解析（A列→0, B列→1 に変換）
+  // ヘルパー関数: 列文字列("A"や"A:C")をインデックス配列([0]や[0,1,2])に変換
+  const parseColString = (str) => {
+    const parts = str.split(':');
+    const colToIdx = (char) => {
+      let idx = 0;
+      // 列名が2文字以上(AAなど)の場合にも対応
+      const cleanChar = char.trim().toUpperCase();
+      for (let i = 0; i < cleanChar.length; i++) {
+        idx = idx * 26 + cleanChar.charCodeAt(i) - 64;
+      }
+      return idx - 1; // 0-based index
+    };
+    
+    if (parts.length === 1) {
+      return [colToIdx(parts[0])];
+    } else if (parts.length === 2) {
+      const start = colToIdx(parts[0]);
+      const end = colToIdx(parts[1]);
+      const indices = [];
+      for (let i = start; i <= end; i++) indices.push(i);
+      return indices;
+    }
+    return [];
+  };
+
+  const keyIdx = parseColString(keyColStr)[0]; // 単一
+  const mainIndices = parseColString(mainRangeStr); // 配列
+  const dtlIndices = parseColString(dtlRangeStr);   // 配列
+  const urlIdx = parseColString(urlColStr)[0]; // 単一
+
+  // 3. データとヘッダーの取得
+  const headers = sheetData.getRange(headerRow, 1, 1, lastCol).getValues()[0];
+  const numRows = lastRow - startRow + 1;
+  const values = sheetData.getRange(startRow, 1, numRows, lastCol).getValues();
+
+  // --- 山本追加分：インデックス解析 ---
+  const vrtiIndices = parseColString(vrtiRangeStr);
+  const alocIndices = parseColString(alocRangeStr);
+  // -------------------------------
+
+  // 4. グルーピング処理
+  const groupedData = {};
+
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    const currentRowNum = startRow + i;
+    
+    // キー取得
+    const groupKey = row[keyIdx];
+    
+    // キーが空の場合はスキップ
+    if (!groupKey) continue;
+
+    // グループ初期化
+    if (!groupedData[groupKey]) {
+      groupedData[groupKey] = {
+        meta: {
+          source_sheet: INVOICE_SHEET_NAME,
+          row_numbers: [],
+          timestamp: new Date().toISOString()
+        },
+        data: {}
+      };
+      
+      // 請求書キーのセット
+      if (headers[keyIdx]) {
+         groupedData[groupKey].data[headers[keyIdx]] = groupKey;
+      }
+
+      // 請求書情報（ルート項目）のセット
+      mainIndices.forEach(idx => {
+        if (headers[idx]) {
+           groupedData[groupKey].data[headers[idx]] = row[idx];
+        }
+      });
+
+
+      // 配列の初期化
+      groupedData[groupKey].data[KEY_NAME_VRTI] = [];
+      groupedData[groupKey].data[KEY_NAME_DETAILS] = [];
+      groupedData[groupKey].data[KEY_NAME_URLS] = [];
+    }
+
+    // 行番号の記録
+    groupedData[groupKey].meta.row_numbers.push(currentRowNum);
+
+    // 明細情報の追加（オブジェクト作成）
+    /*const detailObj = {};
+    let hasDetail = false; // 明細データがあるかチェック用
+    dtlIndices.forEach(idx => {
+      if (headers[idx]) {
+        detailObj[headers[idx]] = row[idx];
+        if (row[idx] !== "") hasDetail = true; // 何かしら値があれば有効とする
+      }
+    });
+    // 明細情報が完全に空でなければ追加（要件に応じて調整可）
+    groupedData[groupKey].data[KEY_NAME_DETAILS].push(detailObj);*/
+
+    // 明細情報の追加（オブジェクト作成）
+    const detailObj = {};
+    dtlIndices.forEach(idx => {
+      if (headers[idx]) {
+        detailObj[headers[idx]] = row[idx];
+      }
+    });
+
+    const vrtiObj = {};
+    let hasVrti = false;
+    vrtiIndices.forEach(idx => {
+      if (headers[idx]) {
+        vrtiObj[headers[idx]] = row[idx];
+        if (row[idx] !== "") hasVrti = true; 
+      }
+    });
+    // 値が存在する場合のみ、配列に追加（重複チェックを入れる場合はここで行う）
+    if (hasVrti) {
+      groupedData[groupKey].data[KEY_NAME_VRTI].push(vrtiObj);
+    }
+
+    // --- 按分情報の追加（明細の配下に作成） ---
+    const allocationObj = {};
+    let hasAllocation = false;
+    alocIndices.forEach(idx => {
+      if (headers[idx]) {
+        allocationObj[headers[idx]] = row[idx];
+        if (row[idx] !== "") hasAllocation = true; // 値があれば有効
+      }
+    });
+
+    // 明細オブジェクトの中に「按分」という名前で配列を入れる
+    detailObj[KEY_NAME_ALLOCS] = hasAllocation ? [allocationObj] : [];
+
+    // 階層化した明細を、請求書データ本体の「明細」配列に追加
+    groupedData[groupKey].data[KEY_NAME_DETAILS].push(detailObj);
+
+
+    // URLの追加
+    if (row[urlIdx]) {
+      // URLの重複を防ぎたい場合は includes チェックを入れる
+      if (!groupedData[groupKey].data[KEY_NAME_URLS].includes(row[urlIdx])) {
+        groupedData[groupKey].data[KEY_NAME_URLS].push(row[urlIdx]);
+      }
+    }
+  }
+
+  // 5. 送信処理
+  const allGroups = Object.values(groupedData);
+  const getJstTime = () => new Date().toLocaleTimeString('en-US', {
+      timeZone: 'Asia/Tokyo', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3
+  });
+
+  console.log(`合計 ${allGroups.length} 件の請求書データを送信します。`);
+
+  for (const group of allGroups) {
+    group.data['処理開始'] = getJstTime();
+
+    const options = {
+      'method': 'post',
+      'contentType': 'application/json',
+      'payload': JSON.stringify(group)
+    };
+
+    try {
+      const response = UrlFetchApp.fetch(WEBHOOK_URL, options);
+      // キー情報を使ってログ出力
+      const keyName = headers[keyIdx] || "Key";
+      console.log(`Key: ${group.data[keyName]} (行数: ${group.meta.row_numbers.length}) 送信成功`);
+    } catch (e) {
+      console.error(`送信エラー: ${e.toString()}`);
+    }
+  }
+  
+  console.log("--- 完了 ---");
+
+}
+
+
+
+function sendAllWithWebhook_test_multiple() 
+{
+  // --- 基本設定 ---
+  // const WEBHOOK_URL = '...'; 
+  const WEBHOOK_URL = 'https://app-n8n-nat-e2fmhrece2cbc7h8.japanwest-01.azurewebsites.net/webhook/91b0ad9c-54cf-42f6-98f4-d38ccd50fda1';
+  
+  const INVOICE_SHEET_NAME = '複数明細'; // シート名を変更
+  const CONFIG_SHEET_NAME = 'コンフィグ';
+  
+  // --- コンフィグシートのセル設定（画像に合わせて修正） ---
+  const CFG_HEADER_ROW = 'D5'; // ヘッダー行番号
+  const CFG_START_ROW  = 'D7'; // 値開始行番号
+
+  const CFG_KEY_COL    = 'C9';  // 請求書キーの列 (例: B)
+  
+  const CFG_MAIN_START = 'C10'; // 請求書情報ヘッダー開始列 (例: C)
+  const CFG_MAIN_END   = 'C11'; // 請求書情報ヘッダー終了列 (例: N)
+  
+  const CFG_DTL_START  = 'C12'; // 明細情報ヘッダー開始列 (例: O)
+  const CFG_DTL_END    = 'C13'; // 明細情報ヘッダー終了列 (例: U)
+  
+  const CFG_URL_COL    = 'C14'; // URLの列 (例: V)
+
+  // JSON出力時の固定キー名
+  const KEY_NAME_DETAILS = '明細';
+  const KEY_NAME_URLS    = 'URL';
+  // ----------------
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheetData = ss.getSheetByName(INVOICE_SHEET_NAME);
+  const sheetConfig = ss.getSheetByName(CONFIG_SHEET_NAME);
+
+  if (!sheetData || !sheetConfig) {
+    console.error("シートが見つかりません。シート名を確認してください。");
+    return;
+  }
+
+  // 1. コンフィグ情報の取得
+  const headerRow = sheetConfig.getRange(CFG_HEADER_ROW).getValue();
+  const startRow = sheetConfig.getRange(CFG_START_ROW).getValue();
+  
+  // 列定義の読み込み
+  const keyColStr = sheetConfig.getRange(CFG_KEY_COL).getValue().toString();
+  
+  const mainStart = sheetConfig.getRange(CFG_MAIN_START).getValue().toString();
+  const mainEnd   = sheetConfig.getRange(CFG_MAIN_END).getValue().toString();
+  const mainRangeStr = `${mainStart}:${mainEnd}`; // "C:N" の形式を作成
+  
+  const dtlStart  = sheetConfig.getRange(CFG_DTL_START).getValue().toString();
+  const dtlEnd    = sheetConfig.getRange(CFG_DTL_END).getValue().toString();
+  const dtlRangeStr = `${dtlStart}:${dtlEnd}`; // "O:U" の形式を作成
+
+  const urlColStr = sheetConfig.getRange(CFG_URL_COL).getValue().toString();
+
+  // バリデーション
+  const lastRow = sheetData.getLastRow();
+  const lastCol = sheetData.getLastColumn();
+  if (typeof startRow !== 'number' || startRow > lastRow || startRow < 1) {
+    console.log("送信対象のデータがありません。");
+    return;
+  }
+
+  // 2. 列番号の解析（A列→0, B列→1 に変換）
+  // ヘルパー関数: 列文字列("A"や"A:C")をインデックス配列([0]や[0,1,2])に変換
+  const parseColString = (str) => {
+    const parts = str.split(':');
+    const colToIdx = (char) => {
+      let idx = 0;
+      // 列名が2文字以上(AAなど)の場合にも対応
+      const cleanChar = char.trim().toUpperCase();
+      for (let i = 0; i < cleanChar.length; i++) {
+        idx = idx * 26 + cleanChar.charCodeAt(i) - 64;
+      }
+      return idx - 1; // 0-based index
+    };
+    
+    if (parts.length === 1) {
+      return [colToIdx(parts[0])];
+    } else if (parts.length === 2) {
+      const start = colToIdx(parts[0]);
+      const end = colToIdx(parts[1]);
+      const indices = [];
+      for (let i = start; i <= end; i++) indices.push(i);
+      return indices;
+    }
+    return [];
+  };
+
+  const keyIdx = parseColString(keyColStr)[0]; // 単一
+  const mainIndices = parseColString(mainRangeStr); // 配列
+  const dtlIndices = parseColString(dtlRangeStr);   // 配列
+  const urlIdx = parseColString(urlColStr)[0]; // 単一
+
+  // 3. データとヘッダーの取得
+  const headers = sheetData.getRange(headerRow, 1, 1, lastCol).getValues()[0];
+  const numRows = lastRow - startRow + 1;
+  const values = sheetData.getRange(startRow, 1, numRows, lastCol).getValues();
+
+  // 4. グルーピング処理
+  const groupedData = {};
+
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    const currentRowNum = startRow + i;
+    
+    // キー取得
+    const groupKey = row[keyIdx];
+    
+    // キーが空の場合はスキップ
+    if (!groupKey) continue;
+
+    // グループ初期化
+    if (!groupedData[groupKey]) {
+      groupedData[groupKey] = {
+        meta: {
+          source_sheet: INVOICE_SHEET_NAME,
+          row_numbers: [],
+          timestamp: new Date().toISOString()
+        },
+        data: {}
+      };
+      
+      // 請求書キーのセット
+      if (headers[keyIdx]) {
+         groupedData[groupKey].data[headers[keyIdx]] = groupKey;
+      }
+
+      // 請求書情報（ルート項目）のセット
+      mainIndices.forEach(idx => {
+        if (headers[idx]) {
+           groupedData[groupKey].data[headers[idx]] = row[idx];
+        }
+      });
+
+      // 配列の初期化
+      groupedData[groupKey].data[KEY_NAME_DETAILS] = [];
+      groupedData[groupKey].data[KEY_NAME_URLS] = [];
+    }
+
+    // 行番号の記録
+    groupedData[groupKey].meta.row_numbers.push(currentRowNum);
+
+    // 明細情報の追加（オブジェクト作成）
+    const detailObj = {};
+    let hasDetail = false; // 明細データがあるかチェック用
+    dtlIndices.forEach(idx => {
+      if (headers[idx]) {
+        detailObj[headers[idx]] = row[idx];
+        if (row[idx] !== "") hasDetail = true; // 何かしら値があれば有効とする
+      }
+    });
+    // 明細情報が完全に空でなければ追加（要件に応じて調整可）
+    groupedData[groupKey].data[KEY_NAME_DETAILS].push(detailObj);
+
+    // URLの追加
+    if (row[urlIdx]) {
+      // URLの重複を防ぎたい場合は includes チェックを入れる
+      if (!groupedData[groupKey].data[KEY_NAME_URLS].includes(row[urlIdx])) {
+        groupedData[groupKey].data[KEY_NAME_URLS].push(row[urlIdx]);
+      }
+    }
+  }
+
+  // 5. 送信処理
+  const allGroups = Object.values(groupedData);
+  const getJstTime = () => new Date().toLocaleTimeString('en-US', {
+      timeZone: 'Asia/Tokyo', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3
+  });
+
+  console.log(`合計 ${allGroups.length} 件の請求書データを送信します。`);
+
+  for (const group of allGroups) {
+    group.data['処理開始'] = getJstTime();
+
+    const options = {
+      'method': 'post',
+      'contentType': 'application/json',
+      'payload': JSON.stringify(group)
+    };
+
+    try {
+      const response = UrlFetchApp.fetch(WEBHOOK_URL, options);
+      // キー情報を使ってログ出力
+      const keyName = headers[keyIdx] || "Key";
+      console.log(`Key: ${group.data[keyName]} (行数: ${group.meta.row_numbers.length}) 送信成功`);
+    } catch (e) {
+      console.error(`送信エラー: ${e.toString()}`);
+    }
+  }
+  
+  console.log("--- 完了 ---");
+}
+
+//解説不要念の為取っておいてあるだけです。
+function sendAllWithWebhook_old() {
+  // --- 設定項目 ---
+  // const WEBHOOK_URL = 'https://ca-w00c-n8n.calmstone-bd389717.japaneast.azurecontainerapps.io/webhook/56c93f36-bf6c-448b-9aff-0272f795ce5e'; // 送信先のWebhook URL 最初の環境のn8n
+  // const WEBHOOK_URL = 'https://ca-w00c-n8n.mangomoss-425cba78.japaneast.azurecontainerapps.io/webhook/56c93f36-bf6c-448b-9aff-0272f795ce5e'; // 坂本さんが作った別環境のn8n
+
+  // const WEBHOOK_URL = 'https://app-4-n8n-cwdpgdhtb0e3g5df.japanwest-01.azurewebsites.net/webhook/56c93f36-bf6c-448b-9aff-0272f795ce5e';
+  const WEBHOOK_URL = 'https://app-n8n-nat-e2fmhrece2cbc7h8.japanwest-01.azurewebsites.net/webhook/f7414083-8fcd-4ec2-934a-80dd56c8c07e';
+  const INVOICE_SHEET_NAME = '投げる情報（請求書）'; // データを抽出するシート名
+  const CONFIG_SHEET_NAME = 'コンフィグ'; // 開始行を指定しているシート名
+  const CONFIG_HEADER = 'D5'; // コンフィグの中で「ヘッダー番号」が入力されているセル
+  const CONFIG_CELL = 'D6'; // コンフィグの中で「値行番号」が入力されているセル
+  // ----------------
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheetData = ss.getSheetByName(INVOICE_SHEET_NAME);
+  const sheetConfig = ss.getSheetByName(CONFIG_SHEET_NAME);
+
+  if (!sheetData || !sheetConfig) {
+    console.error("シートが見つかりません。シート名を確認してください。");
+    return;
+  }
+
+  // 1. シートBから「データの開始行」を取得
+  const headerRow = sheetConfig.getRange(CONFIG_HEADER).getValue();
+  const startRow = sheetConfig.getRange(CONFIG_CELL).getValue();
+  
+  // 最終行と最終列を取得
+  const lastRow = sheetData.getLastRow();
+  const lastCol = sheetData.getLastColumn();
+
+  // バリデーション: 開始行が最終行より大きい、または不正な場合
+  if (typeof startRow !== 'number' || startRow > lastRow || startRow < 1) {
+    console.log("送信対象のデータがありません（開始行が最終行を超えているか、設定が不正です）。");
+    return;
+  }
+  
+  // 2. ヘッダー情報の取得
+  const headers = sheetData.getRange(headerRow, 1, 1, lastCol).getValues()[0]; // 1行目から取得するように修正
+
+  // 3. 値（データ本体）の取得
+  // 取得する行数 = (最終行 - 開始行) + 1
+  const numRows = lastRow - startRow + 1;
+  const values = sheetData.getRange(startRow, 1, numRows, lastCol).getValues();
+
+  // 4. データ行ごとにループしてWebhookを送信
+  for (let i = 0; i < values.length; i++) {
+      // 処理落ちしないため、21件ずつ
+    // if(i % 21 == 0){
+    //   Utilities.sleep(10000)
+    // }
+    const rowValues = values[i];
+    const currentRowNumber = startRow + i; // スプレッドシート上の行番号
+
+    // ヘッダーと値を組み合わせたオブジェクトを作成
+    const rowData = {};
+    for (let j = 0; j < headers.length; j++) {
+      // ヘッダーをキーとし、対応する行の値をバリューとする
+      rowData[headers[j]] = rowValues[j];
+    }
+    // 実行開始時間を記載
+    const now = new Date().toLocaleTimeString('en-US', {
+      timeZone: 'Asia/Tokyo',     // <--- FORCE JAPAN TIME
+      hour12: false,              // Use 24-hour format (change to true for AM/PM)
+      hour: '2-digit',            // Ensure 2 digits (e.g., 05)
+      minute: '2-digit',          
+      second: '2-digit',
+      fractionalSecondDigits: 3   // This adds the .123 milliseconds
+    });
+
+    rowData['処理開始'] = now
+
+    // 5. 送信データ（Payload）の作成
+    const payload = {
+      "meta": {
+        "source_sheet": INVOICE_SHEET_NAME,
+        "row_number": currentRowNumber, // 送信する行番号を追加
+        "timestamp": new Date().toISOString()
+      },
+      "data": rowData // ヘッダーをキーとする1行分のデータオブジェクト
+    };
+
+    // 6. Webhookへの送信オプション作成
+    const options = {
+      'method': 'post',
+      'contentType': 'application/json',
+      'payload': JSON.stringify(payload)
+    };
+    
+    // 送信実行
+    try {
+      const response = UrlFetchApp.fetch(WEBHOOK_URL, options);
+      console.log(`行 ${currentRowNumber} の送信成功: ${response.getContentText().substring(0, 100)}...`);
+    } catch (e) {
+      console.error(`行 ${currentRowNumber} の送信エラー: ${e.toString()}`);
+    }
+  }
+
+  console.log("--- 全ての行の送信処理が完了しました ---");
+
+}
+
+#UI.gs
+// メニューのUI
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  
+  ui.createMenu('n8n') // ← ここがメニューバーに表示される名前です
+    .addItem('並列処理（Demo用）','sendAllWithWebhook') 
+    .addItem('単一処理（Demo用）', 'sendAllWithWebhook_test')
+    // .addItem('複数明細テスト','sendAllWithWebhook_multiple_items')
+    // .addItem('並列処理（検証用）','sendAllWithWebhook_test_multiple') 
+    .addItem('実行結果を削除する','clearResult')
+    .addToUi();
+    
+}
+
+#timeLog.gs
+/**
+ * 指定したシートの指定したセルに、実行時の日時をミリ秒まで書き込む汎用関数
+ * * @param {string} sheetName - 書き込みたいシートの名前（例: "ログ管理"）
+ * @param {string} cellAddress - 書き込みたいセルの番地（例: "A1"）
+ */
+function writeTimestamp(sheetName, cellAddress) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(sheetName);
+  
+  // シートが見つからない場合のエラーハンドリング
+  if (!sheet) {
+    console.error(`シート「${sheetName}」が見つかりませんでした。`);
+    return;
+  }
+
+  const range = sheet.getRange(cellAddress);
+  const now = new Date();
+
+  // 1. 日時をセットする
+  range.setValue(now);
+
+  // 2. 表示形式を「yyyy/MM/dd HH:mm:ss.000」に設定する
+  // これを行わないと、スプレッドシート上では秒までしか表示されないことが多いです
+  range.setNumberFormat("yyyy/MM/dd HH:mm:ss.000");
+}
+
+function waiting()
+{
+      
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  const i = 21;
+
+  ss.toast(" The script has started running...", "Status", 3);
+   // CRITICAL STEP: Force the UI to update immediately
+  SpreadsheetApp.flush(); 
+  // 処理落ちしないため、21件ずつ
+    if(i % 21 == 0){
+      Utilities.sleep(10000)
+    }
+    ss.toast("The script executed successfully!", "Success");
+}
+
+#resultAPI.gs
+function doPost(e) {
+  try {
+    const jsonBody = JSON.parse(e.postData.contents);
+    const status = jsonBody.status;
+    const params = jsonBody.value; 
+    const message = jsonBody.message; 
+
+    if (!params) {
+      throw new Error("JSON内に 'value' データが見つかりません。");
+    }
+
+    if (status === 'Success') {
+      onSuccess(params);
+    } 
+    else if (status === 'Error') {
+      console.warn("APIからエラーが返されました。メッセージ: " + message);
+      console.log("受け取ったデータ(params): " + JSON.stringify(params));
+    } 
+    else {
+      throw new Error(`成功でもエラーでもないステータス： ${status}`);
+    }
+
+    // ★★★ ここを追加！ n8nに「OK」と返します ★★★
+    return ContentService.createTextOutput(JSON.stringify({ result: "success" }))
+                         .setMimeType(ContentService.MimeType.JSON);
+
+  } catch(error) {
+    console.error("実行エラー: " + error.message);
+    
+    // ★★★ エラー時も一応レスポンスを返しておくと親切です ★★★
+    return ContentService.createTextOutput(JSON.stringify({ result: "error", message: error.message }))
+                         .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+
+/**
+ * n8nから成功レスポンスが来た時の処理
+ */
+function onSuccess(params) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  // 1. 【既存処理】請求書ID貼付シートへの追加
+  const sheet = ss.getSheetByName('請求書ID貼付');
+  const paramSheet = ss.getSheetByName('【山本追加】パラメータシート');
+  const headerRowIndex = paramSheet.getRange('H6').getValue(); 
+  const headers = sheet.getRange(headerRowIndex, 1, 1, sheet.getLastColumn()).getValues()[0];
+  appendSheetRow(sheet, headers, params);
+
+  // 2. 【新規追加】「入力」シートのDX列を「着手」に更新する
+  updateInputSheetToCyakusyu(ss, params);
+}
+
+/**
+ * 「入力」シートの該当行を探し、
+ * キーが一致する行のDX列に「着手」を書き込む
+ */
+function updateInputSheetToCyakusyu(ss, params) {
+  const inputSheet = ss.getSheetByName("入力");
+  if (!inputSheet) return;
+
+  // 1. ヘッダー行（6行目）を読み込んで、各列の場所を特定する
+  const headerRow = 6;
+  const lastCol = inputSheet.getLastColumn();
+  const headers = inputSheet.getRange(headerRow, 1, 1, lastCol).getValues()[0];
+
+  // 各列のインデックス（0番目から数えた番号）を探す
+  const keyColIdx = headers.indexOf("管理表CD+予実No+提出日時");
+  const dxColIdx = headers.indexOf("着手済フラグ");
+
+  // 見つからなかった場合の安全策
+  if (keyColIdx === -1 || dxColIdx === -1) {
+    console.error("必要な列（管理表CD+予実No+提出日時 または 着手済フラグ）が見つかりません。");
+    return;
+  }
+
+  // 2. n8nから届いたキーを整形
+  let targetKey = params['請求書キー']; 
+  if (!targetKey) return;
+  targetKey = String(targetKey).trim();
+
+  const lastRow = inputSheet.getLastRow();
+  if (lastRow < 9) return;
+
+  // 3. 判定に必要な列（A列〜最大列まで）のデータを一括取得
+  // ※1列ずつ取得するより、行全体のデータを一度に取るほうが処理が速いです
+  const dataRange = inputSheet.getRange(9, 1, lastRow - 8, lastCol);
+  const values = dataRange.getValues();
+
+  let updatedCount = 0;
+  for (let i = 0; i < values.length; i++) {
+    let sheetKey = String(values[i][keyColIdx]).trim();
+
+    if (sheetKey === targetKey) {
+      // DX列（128列目）に「着手」を書き込む
+      inputSheet.getRange(i + 9, dxColIdx + 1).setValue("着手");
+      updatedCount++;
+    }
+  }
+
+  if (updatedCount > 0) {
+    console.log(`成功: キー '${targetKey}' の行を ${updatedCount} 件更新しました。`);
+  } else {
+    console.warn(`一致なし: キー自体がありません。`);
+  }
+}
+
+
+/**
+ * 新しい行を最終行の下に追加するロジック
+ */
+function appendSheetRow(sheet, headers, params) {
+  // ヘッダーの並び順に基づいて、書き込むデータの配列を作成する
+  const newRowData = headers.map((headerName) => {
+    
+    // JSON(params)の中に、シートのヘッダー名と同じキーがあるか確認
+    if (params.hasOwnProperty(headerName)) {
+      let newVal = params[headerName];
+      
+      // 数式（=）で始まる文字列から = を除去（既存ロジックを継承）
+      if (typeof newVal === 'string' && newVal.startsWith('=')) {
+        newVal = newVal.substring(1);
+      }
+      return newVal;
+    } else {
+      // n8nからデータが届いていない列は空欄にする
+      return "";
+    }
+  });
+
+  // 2. B列（4列目）において、値が入っている一番下の行番号を取得する
+  const lastRowB = sheet.getRange(sheet.getMaxRows(), 2).getNextDataCell(SpreadsheetApp.Direction.UP).getRow();
+  const targetRow = lastRowB + 1; // 書き込みたいのはその次の行
+
+  // 3. 指定した行にデータを流し込む
+  // 1行分 × ヘッダーの数分 の範囲を指定して、配列をセットする
+  sheet.getRange(targetRow, 1, 1, newRowData.length).setValues([newRowData]);  
+  console.log(`Success: Appended new row to sheet '${sheet.getName()}'`);
+}
+
+
+/**
+ * 共通の行更新ロジック
+ * 戻り値を廃止し、ログ出力のみに変更
+ */
+/*function updateSheetRow(sheet, headerRowIndex, headers, keyColIndex, targetKey, params) {
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  let targetRowIndex = -1;
+  let originalRowData = [];
+
+  if (lastRow > headerRowIndex) {
+    const range = sheet.getRange(headerRowIndex + 1, 1, lastRow - headerRowIndex, lastCol);
+    const displayValues = range.getDisplayValues(); // 検索用
+    const rawValues = range.getValues();            // 保存用
+
+    for (let i = 0; i < displayValues.length; i++) {
+      const sheetValue = String(displayValues[i][keyColIndex]).trim();
+      
+      if (sheetValue === targetKey) {
+        targetRowIndex = headerRowIndex + 1 + i;
+        originalRowData = rawValues[i];
+        break;
+      }
+    }
+  }
+
+  // --- 4. 書き込みデータの作成と実行 ---
+  if (targetRowIndex !== -1) {
+    
+    const newRowData = originalRowData.map((originalVal, index) => {
+      const headerName = headers[index];
+
+      // 【最優先】請求書キー列は絶対に変更しない
+      if (headerName === '請求書キー') {
+        return originalVal;
+      }
+
+      // 【判定】JSON(params)の中に、このヘッダー名が存在するか？
+      if (params.hasOwnProperty(headerName)) {
+          let newVal = params[headerName];
+          if (typeof newVal === 'string' && newVal.startsWith('=')) {
+             newVal = newVal.substring(1);
+          }
+          return newVal;
+      } else {
+        return originalVal;
+      }
+    });
+
+    // 行更新
+    sheet.getRange(targetRowIndex, 1, 1, lastCol).setValues([newRowData]);
+    SpreadsheetApp.flush();
+
+    console.log(`Success: Updated row ${targetRowIndex} in sheet '${sheet.getName()}' for key '${targetKey}'`);
+
+  } else {
+    console.warn(`NotFound: No matching row found in sheet '${sheet.getName()}' for key '${targetKey}'`);
+  }
+}*/
+
+#getConcurToken.gs
+function getConcurTokenFromSheet() {
+  // 1. Access the Spreadsheet and the specific Sheet
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName("認証情報"); // Make sure this matches your tab name exactly
+
+  if (!sheet) {
+    console.error("Sheet 'Config' not found!");
+    return;
+  }
+
+  // 2. Read the credentials from Column B
+  // assuming B1=ID, B2=Secret, B3=User, B4=Pass
+  var clientId = sheet.getRange("C3").getValue();
+  var clientSecret = sheet.getRange("C4").getValue();
+  var username = sheet.getRange("C5").getValue();
+  var password = sheet.getRange("C6").getValue();
+
+  // 3. Define the Concur Token Endpoint
+  var tokenUrl = 'https://us-impl.api.concursolutions.com/oauth2/v0/token';
+
+  // 4. Prepare the payload
+  var payload = {
+    'client_id': clientId,
+    'client_secret': clientSecret,
+    'grant_type': 'password',
+    'username': username,
+    'password': password
+  };
+
+  // 5. Make the API Call
+  var options = {
+    'method': 'post',
+    'payload': payload,
+    'muteHttpExceptions': true
+  };
+
+  var response = UrlFetchApp.fetch(tokenUrl, options);
+  var json = JSON.parse(response.getContentText());
+
+  // 6. Log the result or save it
+  if (response.getResponseCode() == 200) {
+    console.log("Success! Token received.");
+    
+    // Example: Write the new token back to the sheet in Cell B6
+    sheet.getRange("B6").setValue(json.access_token);
+    
+    return json.access_token;
+  } else {
+    console.error("Error:", json);
+    return null;
+  }
+}
+
+#sendAssetsToN8n.gs
+/**
+ * 設定項目
+ */
+const CONFIG = {
+  SOURCE: {
+    SHEET_NAME: '入力',
+    START_ROW: 9, 
+    HEADER_ROW: 6,
+    TARGET_COL_NAME: 'RPA対象フラグ' // 判定に使用する列名
+  },
+  MAPPING: {
+    SHEET_NAME: '【山本追加】パラメータシート',
+    START_ROW: 6,
+    COL_NO: 0,      // A列: #1
+    COL_NAME: 1,    // B列: 項目名
+    COL_FIELD: 2,   // C列: フィールド名（LineItems.Amount 等）
+    COL_RULE: 3     // D列: ルール（{{A}} や 固定値）
+  },
+  WEBHOOK_URL: 'https://app-n8n-nat-e2fmhrece2cbc7h8.japanwest-01.azurewebsites.net/webhook/receive-invoice-from-gas'
+};
+
+/**
+ * 経費タイプシートから変換マップを作成
+ */
+function getExpenseTypeMap() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('経費タイプ');
+  if (!sheet) return {};
+
+  const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 4).getValues();
+  const map = {};
+
+  data.forEach(row => {
+    const key = String(row[0]).trim(); // A列：元の値
+    const value = String(row[3]).trim(); // D列：変換後の値
+    if (key) map[key] = value;
+  });
+  return map;
+}
+
+/**
+ * マスタ（変更不可）シートから変換マップを作成
+ */
+function getMasterMaps() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('【山本追加】マスタ（変更不可）');
+  if (!sheet) return { custom13: {}, orgUnit4: {} };
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 4) return { custom13: {}, orgUnit4: {} };
+
+  const data = sheet.getRange(4, 1, lastRow - 3, 10).getValues(); 
+  const custom13Map = {};
+  const orgUnit4Map = {};
+
+  data.forEach(row => {
+    const key13 = cleanValue(row[8]);
+    const val13 = String(row[9]).trim();
+    if (key13) custom13Map[key13] = val13;
+
+    const keyOrg = cleanValue(row[0]);
+    const valOrg = String(row[1]).trim();
+    if (keyOrg) orgUnit4Map[keyOrg] = valOrg;
+  });
+
+  return { custom13: custom13Map, orgUnit4: orgUnit4Map };
+}
+
+/**
+ * 値を比較しやすくするために掃除する関数
+ */
+function cleanValue(val) {
+  if (!val) return "";
+  return String(val)
+    .replace(/[！-～]/g, s => String.fromCharCode(s.charCodeAt(0) - 0xFEE0)) // 全角英数を半角へ
+    .replace(/\s+/g, "") // スペース（全角・半角・改行）をすべて削除
+    .trim();
+}
+
+/**
+ * 日本時間の現在時刻を取得 HH:mm:ss)
+ */
+function getJstTime() {
+  return Utilities.formatDate(new Date(), "JST", "HH:mm:ss");
+}
+
+
+/**
+ * メイン処理：データを解析してn8nへ送信
+ */
+function sendAssetsToN8n() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const srcSheet = ss.getSheetByName(CONFIG.SOURCE.SHEET_NAME);
+  if (!srcSheet) { Browser.msgBox("入力シートが見つかりません"); return; }
+
+  const headers = srcSheet.getRange(CONFIG.SOURCE.HEADER_ROW, 1, 1, srcSheet.getLastColumn()).getValues()[0];
+  const targetColIdx = headers.indexOf(CONFIG.SOURCE.TARGET_COL_NAME);
+
+  if (targetColIdx === -1) {
+    Browser.msgBox(`エラー：列名「${CONFIG.SOURCE.TARGET_COL_NAME}」が見つかりません。`);
+    return;
+  }
+
+  const expenseTypeMap = getExpenseTypeMap();
+  const masterMaps = getMasterMaps();
+  const mappingRules = getMappingRules(ss);
+  
+  const srcValues = srcSheet.getRange(
+    CONFIG.SOURCE.START_ROW, 
+    1, 
+    srcSheet.getLastRow() - CONFIG.SOURCE.START_ROW + 1, 
+    srcSheet.getLastColumn()
+  ).getValues();
+
+  const groupedData = {};
+
+  srcValues.forEach((srcRow, rowIdx) => {
+    const targetStatus = String(srcRow[targetColIdx]).trim(); 
+    if (targetStatus !== "処理対象") return; 
+
+    const rowObj = {};
+    const urlList = [];
+    let groupKey = "";
+    let rowType = ""; // ここに「1」や「2」が入る
+
+    mappingRules.forEach((m) => {
+      if (!m || !m.fieldName) return;
+
+      let val = (m.rule.type === 'STATIC') ? m.rule.value : srcRow[m.rule.colIndex];
+      if (val === "" || val === null || val === undefined) val = "";
+
+      // --- 判定用フラグ(RowType)の取得と数値化 ---
+      if (m.fieldName === 'RowType') {
+        // 全角数字を半角にし、数字以外を除去して数値化
+        rowType = String(val).replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0) - 0xFEE0)).replace(/\D/g, "");
+      }
+
+      if (m.fieldName === 'Custom2') {
+        const colJValue = String(srcRow[9]).trim(); 
+        val = ["SA", "SG", "SI", "SK"].includes(colJValue) ? "070-3329-9798" : "090-9848-2794";
+      }
+      if (m.fieldName === 'Custom13') {
+        const cleanedVal = cleanValue(val);
+        if (masterMaps.custom13.hasOwnProperty(cleanedVal)) val = masterMaps.custom13[cleanedVal];
+      }
+      if (m.fieldName === 'Custom14' || m.fieldName === 'LineItems.Custom15') {
+        const originalVal = String(val).trim();
+        val = (originalVal === "Yes") ? "Y" : "N";
+      }
+      if (m.fieldName === 'IsEmergencyCheckRun'){
+        const originalVal = String(val).trim();
+        val = (originalVal !== "") ? "Y" : "N";
+      }
+      if (m.fieldName === 'OrgUnit4') {
+        const originalVal = String(val).trim();
+        val = masterMaps.orgUnit4[originalVal] || originalVal;
+      }
+      if (m.fieldName.includes('ExpenseTypeCode')) {
+        const originalVal = String(val).trim();
+        val = expenseTypeMap[originalVal] || originalVal;
+      }
+      if (m.fieldName.includes('Description')) {
+        val = String(val).replace(/\s+/g, "");
+        if (val.length >= 37) val = val.substring(0, 36);
+      }
+      if (m.fieldName.includes('UnitPrice') || m.fieldName.includes('Quantity')) {
+        let num = Number(val.toString().replace(/,/g, ''));
+        val = isNaN(num) ? 0 : num;
+      } else {
+        val = formatDate(val);
+      }
+
+    // --- 原価(Allocations)に関する一括制御 ---
+    const isAllocationField = m.fieldName.includes('LineItems.Allocations.');
+    const gcValue = String(srcRow[columnLetterToIndex("GC")]).trim();
+
+    if (isAllocationField) {
+      // GC列が「原価」ではない場合は、このフィールドの処理自体をスキップする
+      if (gcValue !== "原価") {
+        return; // mappingRules.forEach の現在のループをスキップ（＝setNestedValueが呼ばれない）
+      }
+
+      // 以下、GC列が「原価」の場合のみ実行されるロジック
+      const isPercentageField = m.fieldName.includes('Percentage');
+
+      // Custom1 の処理
+      if (m.fieldName === 'LineItems.Allocations.Custom1') {
+        const currentCustom2 = getNestedValue(rowObj, 'LineItems.Allocations.Custom2');
+        val = (currentCustom2 && String(currentCustom2).trim() !== "") ? "0216" : "";
+      }
+
+      // Custom12 の処理
+      if (m.fieldName === 'LineItems.Allocations.Custom12') {
+        const currentCustom11 = getNestedValue(rowObj, 'LineItems.Allocations.Custom11');
+        val = (currentCustom11 && String(currentCustom11).trim() !== "") ? "0216" : "";
+      }
+
+      // 固定値項目
+      if (m.fieldName === 'LineItems.Allocations.Custom13') val = "T001425";
+      if (m.fieldName === 'LineItems.Allocations.Custom3') val = "S";
+      
+      // トリム処理
+      if (m.fieldName.includes('Custom4') || m.fieldName.includes('Custom11') || isPercentageField) {
+        val = String(val).trim();
+      }
+    }
+      if (m.fieldName === '請求書キー') groupKey = val;
+      if (m.fieldName === 'URL') {
+        if (val) urlList.push(val);
+      } else {
+        setNestedValue(rowObj, m.fieldName, val);
+      }
+    });
+
+    if (!groupKey) return;
+
+    if (!groupedData[groupKey]) {
+      groupedData[groupKey] = {
+        meta: { source_sheet: CONFIG.SOURCE.SHEET_NAME, row_numbers: [], URL: [] },
+        data: {} 
+      };
+    }
+
+    const group = groupedData[groupKey];
+    
+    // --- 数値（1＝親、2以上＝子）による上書き制御 ---
+    Object.keys(rowObj).forEach(key => {
+      const rowTypeNum = Number(rowType);
+
+      if (key === 'LineItems') {
+        // 明細は「親・子」関係なくすべて配列に追加
+        if (!group.data.LineItems) group.data.LineItems = [];
+        let lineItem = rowObj.LineItems;
+        if (lineItem.Allocations && !Array.isArray(lineItem.Allocations)) {
+          lineItem.Allocations = [lineItem.Allocations];
+        }
+        group.data.LineItems.push(lineItem);
+        
+      } else if (key !== 'RowType') {
+        // ヘッダー情報の処理
+        const isParent = (rowTypeNum === 1);
+        const isEmptyHeader = (!group.data[key]);
+
+        // 「親(1)の行」のデータ、または「まだヘッダーが空」の場合のみ採用
+        if (isParent || isEmptyHeader) {
+          if (rowObj[key] !== undefined && rowObj[key] !== null) {
+            group.data[key] = rowObj[key];
+          }
+        }
+      }
+    });
+
+    urlList.forEach(url => {
+      if (!group.meta.URL.includes(url)) group.meta.URL.push(url);
+    });
+    group.meta.row_numbers.push(CONFIG.SOURCE.START_ROW + rowIdx);
+    });
+
+    const creds = getCredentials(ss); 
+
+    // ペイロードの組み立て
+    const finalPayloads = Object.values(groupedData).map(group => {
+    // 処理開始時間を追加
+    group.data['処理開始'] = getJstTime(); 
+    group.data['URL'] = group.meta.URL; 
+
+    return {
+      data: group.data,
+      meta: {
+        source_sheet: group.meta.source_sheet,
+        row_numbers: group.meta.row_numbers,
+        concur_id: creds.concur_id,
+        katsubun_pw: creds.katsubun_pw
+      }
+    };
+  });
+
+  executePost(finalPayloads);
+}
+
+
+/**
+ * n8nへPOST送信
+ */
+function executePost(payloadList) {
+  if (payloadList.length === 0) {
+    console.log("送信対象データがありませんでした。");
+    return;
+  }
+
+  payloadList.forEach(payload => {
+    // 送信データを文字列化
+    const body = JSON.stringify(payload);
+    
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      payload: body,                   // 文字列化したデータを渡す
+      muteHttpExceptions: true
+    };
+    
+    try {
+      const response = UrlFetchApp.fetch(CONFIG.WEBHOOK_URL, options);
+      const code = response.getResponseCode();
+      const resText = response.getContentText();
+      
+      if (code === 200) {
+        console.log(`送信成功: ${body.substring(0, 100)}...`);
+      } else {
+        // n8nからのエラーメッセージをログに出す
+        console.error(`n8nエラー (Code: ${code}): ${resText}`);
+      }
+    } catch (e) {
+      console.error(`通信失敗: ${e.message}`);
+    }
+  });
+  
+  Browser.msgBox(`${payloadList.length}件の送信処理が終わりました。n8n側の結果を確認してください。`);
+}
+
+
+/**
+ * ドット区切りパスに値をセットする（ネスト構造作成）
+ */
+function setNestedValue(obj, path, value) {
+  const keys = path.split('.');
+  let current = obj;
+  while (keys.length > 1) {
+    const key = keys.shift();
+    if (!current[key]) current[key] = {};
+    current = current[key];
+  }
+  current[keys.shift()] = value;
+}
+
+/**
+ * マッピングシートからルールを取得
+ */
+function getMappingRules(ss) {
+  const mapSheet = ss.getSheetByName(CONFIG.MAPPING.SHEET_NAME);
+  if (!mapSheet) return [];
+  
+  const mapData = mapSheet.getRange(
+    CONFIG.MAPPING.START_ROW, 
+    1, 
+    mapSheet.getLastRow() - CONFIG.MAPPING.START_ROW + 1, 
+    4
+  ).getValues();
+  
+  const rules = [];
+  mapData.forEach(row => {
+    const match = row[CONFIG.MAPPING.COL_NO].toString().match(/#(\d+)/);
+    if (match) {
+      const index = parseInt(match[1], 10) - 1;
+      rules[index] = {
+        fieldName: row[CONFIG.MAPPING.COL_FIELD],
+        rule: parseRule(row[CONFIG.MAPPING.COL_RULE])
+      };
+    }
+  });
+  return rules;
+}
+
+/**
+ * ルール文字列を解析
+ */
+function parseRule(ruleStr) {
+  if (!ruleStr) return { type: 'EMPTY' };
+  const str = String(ruleStr);
+  const match = str.match(/^\{\{([A-Za-z]+)\}\}$/);
+  if (match) {
+    return { type: 'COLUMN_REF', colIndex: columnLetterToIndex(match[1].toUpperCase()) };
+  }
+  return { type: 'STATIC', value: str };
+}
+
+/**
+ * 列記号をインデックスに変換
+ */
+function columnLetterToIndex(letter) {
+  let column = 0;
+  for (let i = 0; i < letter.length; i++) {
+    column += (letter.charCodeAt(i) - 64) * Math.pow(26, letter.length - i - 1);
+  }
+  return column - 1;
+}
+
+/**
+ * 日付形式の変換
+ */
+function formatDate(dateVal) {
+  if (!dateVal) return "";
+  let strVal = dateVal.toString().trim();
+  if (/^\d{1,4}\/\d{1,2}\/\d{1,2}$/.test(strVal)) {
+    return strVal.replace(/\//g, '-');
+  }
+  if (Object.prototype.toString.call(dateVal) === "[object Date]") {
+    return Utilities.formatDate(dateVal, Session.getScriptTimeZone(), "yyyy-MM-dd");
+  }
+  return dateVal;
+}
+
+/**
+ * ドット区切りパスから値を取得する（ネスト構造読み取り用）
+ */
+function getNestedValue(obj, path) {
+  const keys = path.split('.');
+  let current = obj;
+  for (const key of keys) {
+    if (current[key] === undefined) return undefined;
+    current = current[key];
+  }
+  return current;
+}
+
+/**
+ * パラメータシートから認証情報を取得
+ */
+function getCredentials(ss) {
+  const mapSheet = ss.getSheetByName(CONFIG.MAPPING.SHEET_NAME);
+  // シートがない場合、両方空で返す
+  if (!mapSheet) return { concur_id: "", katsubun_pw: "" };
+
+  // 2行目の1列目(A)から2列分(A, B)を取得
+  const creds = mapSheet.getRange(2, 1, 1, 2).getValues()[0];
+
+  return {
+    concur_id: String(creds[0] || "").trim(),    // A2
+    katsubun_pw: String(creds[1] || "").trim()   // B2
+  };
+}
+
+/**
+ * メニュー追加
+ */
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('n8n連携')
+    .addItem('入力データを送信', 'sendAssetsToN8n')
+    .addItem('並列処理（Demo用）','sendAllWithWebhook') 
+    .addItem('単一処理（Demo用）', 'sendAllWithWebhook_test')
+    // .addItem('複数明細テスト','sendAllWithWebhook_multiple_items')
+    // .addItem('並列処理（検証用）','sendAllWithWebhook_test_multiple') 
+    .addItem('実行結果を削除する','clearResult')
+    .addToUi();
+}
