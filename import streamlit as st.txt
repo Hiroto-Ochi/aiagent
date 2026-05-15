@@ -1,0 +1,432 @@
+import streamlit as st
+from snowflake.snowpark.context import get_active_session
+import pandas as pd
+import _snowflake
+import json
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import re
+
+# --- 初期設定 ---
+session = get_active_session()
+st.set_page_config(page_title="店舗売上AI分析", layout="wide")
+st.title("📊 店舗売上 AIダッシュボード")
+
+# =========================
+# 📂 モデル選択（サイドバー）
+# =========================
+MODELS = {
+    "売上詳細分析 (SALES_VIEW)": "@JRPDAF_DB.ANALYTICS.ANALYTICS_STG/SALES_VIEW.yaml",
+    "業績サマリ分析 (SUMMARY_VIEW)": "@JRPDAF_DB.ANALYTICS.ANALYTICS_STG/SUMMARY_VIEW_ver03.yaml",
+    "収支実績分析 (PROFIT_VIEW)": "@JRPDAF_DB.ANALYTICS.ANALYTICS_STG/PROFIT_VIEW_ver06.yaml"
+}
+
+selected_model_name = st.sidebar.selectbox("分析対象を選択してください", list(MODELS.keys()))
+SEMANTIC_MODEL_FILE = MODELS[selected_model_name]
+
+# モデルが変更されたら履歴をリセット
+if "current_model" not in st.session_state or st.session_state.current_model != selected_model_name:
+    st.session_state.messages = [{"role": "assistant", "content": "準備ができました。質問してください。"}]
+    st.session_state.last_df = None
+    st.session_state.last_sql = None
+    st.session_state.current_model = selected_model_name
+    st.rerun()
+
+# --- デバッグ ---
+DEBUG_MODE = st.sidebar.toggle("🛠 デバッグモード", value=False)
+
+# --- セッション状態の初期化 ---
+for key in ["messages", "last_df", "last_sql", "last_prompt", "pending_confirmation", "confirmed_prompt"]:
+    if key not in st.session_state: st.session_state[key] = None
+
+if st.session_state.messages is None:
+    # 🆕 初期メッセージの分岐を追加
+    if "PROFIT" in selected_model_name:
+        initial_msg = "収支や利益の実績について質問してください（例：部門別の収支は？など）"
+    elif "SALES" in selected_model_name:
+        initial_msg = "店舗売上について質問してください"
+    else:
+        initial_msg = "業績サマリ（目標・前年比）について質問してください"
+    st.session_state.messages = [
+        {"role": "assistant", "content": initial_msg}
+    ]
+
+# --- チャット履歴表示 ---
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.write(msg["content"])
+
+# =========================
+# 🧠 ヘルパー関数
+# =========================
+def safe_parse(response):
+    try:
+        if isinstance(response, str): response = json.loads(response)
+        if isinstance(response, dict):
+            content = response.get("content", response)
+            if isinstance(content, str):
+                parsed = json.loads(content)
+                if isinstance(parsed, str): parsed = json.loads(parsed)
+                return parsed
+            return content
+    except: return {"error": "Parse Error"}
+    return {}
+
+def build_messages():
+    msgs = []
+    for m in st.session_state.messages:
+        role = "analyst" if m["role"] == "assistant" else m["role"]
+        msgs.append({"role": role, "content": [{"type": "text", "text": m["content"]}]})
+    if msgs and msgs[0]["role"] == "analyst": msgs.pop(0)
+    return msgs
+
+def extract_top_n(text):
+    match = re.search(r"トップ\s*(\d+)", text)
+    return int(match.group(1)) if match else None
+
+def detect_ambiguous_query(text):
+    return any(k in text for k in ["と", "、", "及び", "それぞれ"])
+
+def normalize_query(text):
+    if "月" in text and "店舗" in text:
+        return "店舗別・カテゴリ別の売上を月ごとに表示"
+    return text
+
+# =========================
+# 🔵 ユーザー入力と意図確認
+# =========================
+
+if "SALES_VIEW" in selected_model_name:
+    placeholder_text = "質問を入力（例：店舗別の売上は？ / カテゴリ別の売上ランキングを教えて）"
+elif "SUMMARY_VIEW" in selected_model_name:
+    placeholder_text = "質問を入力（例：店舗別の達成率を時系列で見せて / 目標金額、実績金額、前年の金額を比較して）"
+elif "PROFIT_VIEW" in selected_model_name:
+    placeholder_text = "質問を入力（例：部門ごとの実績金額を教えて / 月ごとの実績金額の推移を見せて）"
+else:
+    placeholder_text = "質問を入力してください"
+
+# 変更したプレースホルダーを chat_input にセット
+prompt = st.chat_input(placeholder_text)
+
+# --- 意図確認ボタンの表示エリア ---
+if st.session_state.pending_confirmation:
+    with st.chat_message("assistant"):
+        st.warning(f"⚠️ 意図を確認させてください。以下の内容で分析してもよろしいですか？\n\n**「{st.session_state.pending_confirmation}」**")
+        col1, col2 = st.columns(2)
+        if col1.button("✅ OK", key="confirm_ok"):
+            st.session_state.confirmed_prompt = st.session_state.pending_confirmation
+            st.session_state.pending_confirmation = None
+            st.session_state.skip_check = True # 💡 チェックをスキップするフラグ
+            st.rerun()
+        if col2.button("❌ キャンセル", key="confirm_cancel"):
+            st.session_state.pending_confirmation = None
+            st.rerun()
+    st.stop()
+
+# --- 確定したプロンプトの取り込み ---
+if st.session_state.confirmed_prompt:
+    prompt = st.session_state.confirmed_prompt
+    st.session_state.confirmed_prompt = None
+else:
+    st.session_state.skip_check = False # 新しい入力があったらフラグを戻す
+
+# =========================
+# 🧠 クエリ実行
+# =========================
+if prompt:
+    if not st.session_state.get("skip_check", False):
+        if detect_ambiguous_query(prompt) and "SALES" in selected_model_name:
+            st.session_state.pending_confirmation = normalize_query(prompt)
+            st.rerun()
+
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    st.session_state.skip_check = False
+
+    with st.spinner("AIがデータを分析しています..."):
+        messages_payload = build_messages()
+        request_body = {"messages": messages_payload, "semantic_model_file": SEMANTIC_MODEL_FILE}
+        if DEBUG_MODE: st.json(request_body)
+
+        try:
+            response = _snowflake.send_snow_api_request("POST", "/api/v2/cortex/analyst/message", {}, {}, request_body, {}, 30000)
+            if response.get("status") != 200:
+                st.error(f"APIエラー: {response.get('status')}")
+                st.session_state.messages.pop()
+                st.stop()
+
+            data = safe_parse(response)
+            sql = None
+            for item in data.get("message", {}).get("content", []):
+                if item.get("type") == "sql": sql = item.get("statement")
+
+            if not sql:
+                st.warning("SQLが生成されませんでした。")
+                st.stop()
+
+            # --- SQL実行とデータ加工 ---
+            df = session.sql(sql).to_pandas()
+            df.columns = [c.upper() for c in df.columns]
+            
+            # 🆕 階層データ内の欠損値を埋める（データ型に応じた処理）
+            for col in df.columns:
+                if pd.api.types.is_numeric_dtype(df[col]):
+                    df[col] = df[col].fillna(0)  # 数値の欠損は 0 として扱う
+                else:
+                    df[col] = df[col].fillna("未分類")  # 文字列の欠損は「未分類」にする
+            
+            # df = session.sql(sql).to_pandas()
+            # df.columns = [c.upper() for c in df.columns]
+            # # 🆕 階層データ内の欠損値を埋める（サンバーストのエラー対策）
+            # df = df.fillna("未分類")
+
+            # 📅 日付型変換
+            if "NNGPP" in df.columns:
+                df["NNGPP"] = pd.to_datetime(df["NNGPP"], format="%Y%m%d", errors='coerce')
+                df = df.sort_values("NNGPP")
+            if "SALES_DATE" in df.columns:
+                df["SALES_DATE"] = pd.to_datetime(df["SALES_DATE"], errors='coerce')
+                df = df.sort_values("SALES_DATE")
+            if "転記日" in df.columns:
+                df["転記日"] = pd.to_datetime(df["転記日"], errors='coerce')
+                df = df.sort_values("転記日")
+            if "YEAR_MONTH" in df.columns:
+            # 202504 -> 2025-04-01 として変換
+                df["YEAR_MONTH"] = pd.to_datetime(df["YEAR_MONTH"].astype(str) + "01", format="%Y%m%d", errors='coerce')
+                df = df.sort_values("YEAR_MONTH")
+            top_n = extract_top_n(prompt)
+            if top_n and not df.empty:
+                numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+                if numeric_cols:
+                    df = df.sort_values(by=numeric_cols[0], ascending=False).head(top_n)
+
+            st.session_state.last_df = df
+            st.session_state.last_sql = sql
+            st.session_state.last_prompt = prompt
+            st.session_state.messages.append({"role": "analyst", "content": "分析結果を表示しました。"})
+            st.rerun()
+
+        except Exception as e:
+            st.error(f"エラーが発生しました: {str(e)}")
+            st.stop()
+
+
+# =========================
+# 📊 強化版ダッシュボード表示
+# =========================
+if st.session_state.last_df is not None:
+    df = st.session_state.last_df.copy()
+    st.divider()
+    st.subheader(f"📊 分析結果: {st.session_state.last_prompt}")
+
+    # --- 1. サイドバー動的フィルタ ---
+    st.sidebar.header("🔎 絞り込み")
+    filter_dict = {
+        "SHSH_MI": "支社", "TNP_MI": "店舗", "BRANCH": "支店", 
+        "STORE_NAME": "店舗名", "CATEGORY_LARGE": "カテゴリ", 
+        "DEPARTMENT_NAME": "部門", "CATEGORY_L1": "収支大分類", "ACCOUNT_NAME": "勘定科目"
+    }
+    for col, label in filter_dict.items():
+        if col in df.columns:
+            selected = st.sidebar.multiselect(label, df[col].dropna().unique())
+            if selected: df = df[df[col].isin(selected)]
+                
+    # --- 2. メトリクス (Sum, Mean, Max) ---
+    numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+    if numeric_cols:
+        m1, m2, m3 = st.columns(3)
+        target = numeric_cols[0]
+        m1.metric("合計", f"{df[target].sum():,.1f}")
+        m2.metric("平均", f"{df[target].mean():,.1f}")
+        m3.metric("最大", f"{df[target].max():,.1f}")
+
+    st.dataframe(df, use_container_width=True)
+
+    # --- 3. グラフ描画（ヒートマップ＋複合グラフ追加） ---
+    if numeric_cols:
+        with st.expander("📈 可視化設定", expanded=True):
+            # グラフタイプに「複合グラフ」を追加
+            chart_type = st.selectbox("グラフタイプ", 
+                ["折れ線", "棒", "円", "ヒートマップ", "複合グラフ", "パレート図", "ウォーターフォール"])
+            non_num_cols = [c for c in df.columns if c not in numeric_cols]
+            
+            if chart_type == "サンバースト":
+                # 階層構造（大分類 > 中分類）があればサンバースト、なければ円グラフ風に動作
+                hierarchy = [c for c in ["CATEGORY_L1", "ACCOUNT_NAME", "DEPARTMENT_NAME"] if c in df.columns]
+                # hierarchy = [c for c in ["大分類", "中分類", "小分類", "勘定科目名", "部門名"] if c in df.columns]
+                if hierarchy:
+                    val = st.selectbox("値", numeric_cols)
+                    st.plotly_chart(px.sunburst(df, path=hierarchy, values=val), use_container_width=True)
+                else:
+                    st.warning("サンバースト図を表示するには、大分類や部門名などの項目が必要です。")
+
+            elif chart_type == "ウォーターフォール":
+                # P/Lの推移を見るためのグラフ
+                x_col = st.selectbox("項目", non_num_cols)
+                y_col = st.selectbox("金額", numeric_cols)
+                # 集計して表示
+                df_wf = df.groupby(x_col)[y_col].sum().reset_index()
+                fig = go.Figure(go.Waterfall(
+                    orientation="v",
+                    x=df_wf[x_col],
+                    y=df_wf[y_col],
+                    connector={"line":{"color":"rgb(63, 63, 63)"}},
+                ))
+                st.plotly_chart(fig, use_container_width=True) 
+                
+            elif chart_type == "ヒートマップ":
+                if len(non_num_cols) >= 2:
+                    c1, c2, c3 = st.columns(3)
+                    idx = c1.selectbox("行", non_num_cols, key="h_row")
+                    col = c2.selectbox("列", non_num_cols, key="h_col")
+                    val = c3.selectbox("値", numeric_cols, key="h_val")
+                    if idx != col:
+                        pv = df.pivot_table(index=idx, columns=col, values=val, aggfunc="sum").fillna(0)
+                        st.plotly_chart(px.imshow(pv, text_auto=True, aspect="auto"), use_container_width=True)
+                    else: st.warning("行と列には別々の項目を選んでください")
+                else: st.warning("ヒートマップには項目（カテゴリ）が2つ以上必要です")
+            
+            elif chart_type == "複合グラフ":
+                # MotionBoard風ダッシュボードを再現するロジック
+                c1, c2 = st.columns(2)
+                date_cols = [c for c in ["YEAR_MONTH", "NNGPP", "SALES_DATE"] if c in df.columns]
+                def_x = date_cols[0] if date_cols else (non_num_cols[0] if non_num_cols else df.columns[0])
+                x_col = c1.selectbox("X軸（日付推奨）", df.columns, index=list(df.columns).index(def_x))
+                
+                # 自動的に該当しそうなカラムを選択する（なければ最初の数値カラム）
+                # col_actual = "URAG_KNGK" if "URAG_KNGK" in numeric_cols else numeric_cols[0]
+                # col_target = "MKHYU_URAG_KNGK" if "MKHYU_URAG_KNGK" in numeric_cols else numeric_cols[0]
+                # col_prev   = "ZNNN_URAG_KNGK" if "ZNNN_URAG_KNGK" in numeric_cols else numeric_cols[0]
+
+                # カラム名に含まれるキーワードから、どの指標かを推測する
+                col_actual = next((c for c in numeric_cols if any(k in c for k in ["URAG", "実績", "SALES", "ACTUAL"])), numeric_cols[0])
+                # 目標は、実際の売上カラムを除いた中から探す
+                other_cols = [c for c in numeric_cols if c != col_actual]
+                col_target = next((c for c in other_cols if any(k in c for k in ["MKHYU", "目標", "TARGET"])), None)
+                col_prev   = next((c for c in other_cols if any(k in c for k in ["ZNNN", "前年", "PREV"])), None)
+
+                # --- 【重要】グラフ表示用に日付単位で合計を集計する ---
+                # これにより、複数支社が選ばれていても「その日の合計」が正しく1つの点として描画する
+                agg_dict = {col_actual: 'sum'}
+                if col_target: agg_dict[col_target] = 'sum'
+                if col_prev: agg_dict[col_prev] = 'sum'
+                
+                plot_df = df.groupby(x_col).agg(agg_dict).reset_index().sort_values(x_col)
+                
+                fig = go.Figure()
+                
+                # 実績（棒グラフ）
+                if col_actual in plot_df.columns:
+                    fig.add_trace(go.Bar(
+                        x=plot_df[x_col],      # df ではなく plot_df を使う
+                        y=plot_df[col_actual], # df ではなく plot_df を使う
+                        name="実績金額", 
+                        marker_color='#93C5FD',
+                        opacity=0.7
+                    ))
+                
+                # 前年（点線）
+                if col_prev and col_prev in plot_df.columns:
+                    fig.add_trace(go.Scatter(
+                        x=plot_df[x_col],      # plot_df に変更
+                        y=plot_df[col_prev],   # plot_df に変更
+                        name="前年金額", 
+                        mode='lines+markers', 
+                        line=dict(color='#64748B', width=2, dash='dot')
+                    ))
+                
+                # 目標（実線）
+                if col_target and col_target in plot_df.columns:
+                    fig.add_trace(go.Scatter(
+                        x=plot_df[x_col],      # plot_df に変更
+                        y=plot_df[col_target], # plot_df に変更
+                        name="目標金額", 
+                        mode='lines+markers', 
+                        line=dict(color='#F59E0B', width=3)
+                    ))
+
+                fig.update_layout(
+                    title="売上動向 (実績・前年・目標)",
+                    xaxis_title="年月日",
+                    yaxis_title="金額",
+                    hovermode="x unified",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    plot_bgcolor='rgba(0,0,0,0)', # 背景を白くして清潔感を出す
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+            elif chart_type == "パレート図":
+                c1, c2 = st.columns(2)
+                # パレート図の軸選択（項目と数値）
+                x_col = c1.selectbox("集計軸（項目）", non_num_cols if non_num_cols else df.columns)
+                y_col = c2.selectbox("集計値（金額など）", numeric_cols)
+
+                # 1. データの集計・降順ソート
+                df_p = df.groupby(x_col)[y_col].sum().reset_index()
+                df_p = df_p.sort_values(by=y_col, ascending=False)
+
+                # 2. 累計構成比の計算
+                df_p['cumulative_sum'] = df_p[y_col].cumsum()
+                df_p['cumulative_perc'] = 100 * df_p['cumulative_sum'] / df_p[y_col].sum()
+
+                # 3. 2軸グラフの作成
+                fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+                # 棒グラフ（各項目の実績）
+                fig.add_trace(
+                    go.Bar(
+                        x=df_p[x_col], 
+                        y=df_p[y_col], 
+                        name=f"{y_col}（実績）", 
+                        marker_color='#93C5FD',
+                        opacity=0.8
+                    ),
+                    secondary_y=False,
+                )
+
+                # 折れ線グラフ（累計構成比）
+                fig.add_trace(
+                    go.Scatter(
+                        x=df_p[x_col], 
+                        y=df_p['cumulative_perc'], 
+                        name="累計構成比 (%)", 
+                        mode='lines+markers',
+                        line=dict(color='#EF4444', width=3), # 目立つ赤系
+                        marker=dict(size=8)
+                    ),
+                    secondary_y=True,
+                )
+
+                # レイアウト調整
+                fig.update_layout(
+                    title=f"{x_col}別の売上パレート図（ABC分析）",
+                    hovermode="x unified",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    plot_bgcolor='rgba(0,0,0,0)',
+                )
+
+                fig.update_yaxes(title_text="金額", secondary_y=False)
+                fig.update_yaxes(title_text="累計構成比 (%)", secondary_y=True, range=[0, 105], dtick=20)
+
+                st.plotly_chart(fig, use_container_width=True)
+                
+            else:
+                c1, c2 = st.columns(2)
+                date_cols = [c for c in ["YEAR_MONTH", "NNGPP", "SALES_DATE"] if c in df.columns]
+                def_x = date_cols[0] if date_cols else (non_num_cols[0] if non_num_cols else df.columns[0])
+                
+                x_col = c1.selectbox("軸", df.columns, index=list(df.columns).index(def_x))
+                y_col = c2.selectbox("数値", numeric_cols)
+                
+                if chart_type == "棒": st.plotly_chart(px.bar(df, x=x_col, y=y_col, text_auto=True), use_container_width=True)
+                elif chart_type == "折れ線": st.plotly_chart(px.line(df, x=x_col, y=y_col, markers=True), use_container_width=True)
+                elif chart_type == "円": st.plotly_chart(px.pie(df, names=x_col, values=y_col), use_container_width=True)
+
+    # --- 4. ドリルダウン機能 ---
+    with st.expander("🔍 データの詳細確認（ドリルダウン）"):
+        d_col = st.selectbox("絞り込む軸", df.columns)
+        d_val = st.selectbox("対象を選択", df[d_col].dropna().unique())
+        st.dataframe(df[df[d_col] == d_val], use_container_width=True)
+
+    if DEBUG_MODE:
+        with st.expander("🛠 生成SQL"): st.code(st.session_state.last_sql, language="sql")

@@ -1,0 +1,78 @@
+name: SUMMARY_VIEW
+
+tables:
+  - name: V_SUMMARY
+    description: "支社および店舗別の売上実績、客数、前年比較、および目標達成率を管理するサマリテーブル。年月日(NNGPP)はYYYYMMDD形式の文字列です。"
+    base_table:
+      database: JRPDAF_DB
+      schema: ANALYTICS
+      table: V_SUMMARY
+
+    dimensions:
+      - name: NNGPP
+        description: "年月日。形式は 'YYYYMMDD' (例: 20251201)。"
+        expr: NNGPP
+        data_type: VARCHAR(8)
+        sample_values:
+          - '20251201'
+      - name: SHSH_MI
+        description: "支社名"
+        expr: SHSH_MI
+        data_type: VARCHAR(250)
+        sample_values:
+          - 関東支社
+      - name: TNP_MI
+        description: "店舗名。店舗の正式名称。"
+        expr: TNP_MI
+        data_type: VARCHAR(250)
+        sample_values:
+          - PD東京
+
+    facts:
+      - name: URAG_KNGK
+        description: "当日の売上金額"
+        expr: URAG_KNGK
+        data_type: NUMBER(38,6)
+        access_modifier: public_access
+      - name: KYK_SU
+        description: "当日の客数"
+        expr: KYK_SU
+        data_type: NUMBER(38,6)
+        access_modifier: public_access
+      - name: MKHYU_URAG_KNGK
+        description: "当日の売上目標値"
+        expr: MKHYU_URAG_KNGK
+        data_type: NUMBER(38,6)
+        access_modifier: public_access
+      - name: ZNNN_URAG_KNGK
+        description: "前年同日の売上実績"
+        expr: ZNNN_URAG_KNGK
+        data_type: NUMBER(38,6)
+        access_modifier: public_access
+      - name: GTSD_RIKI_URAG_KNGK
+        description: "月度累計売上"
+        expr: GTSD_RIKI_URAG_KNGK
+        data_type: NUMBER(38,6)
+        access_modifier: public_access
+      - name: TUSHU_RIKI_URAG_KNGK
+        description: "当週累計売上"
+        expr: TUSHU_RIKI_URAG_KNGK
+        data_type: NUMBER(38,6)
+        access_modifier: public_access
+
+verified_queries:
+  - name: "店舗別達成率"
+    question: "店舗別の売上と目標達成率を教えて"
+    sql: SELECT TNP_MI, SUM(URAG_KNGK) AS total_sales, (SUM(URAG_KNGK) / NULLIF(SUM(MKHYU_URAG_KNGK), 0)) * 100 AS achievement_rate FROM V_SUMMARY GROUP BY TNP_MI
+
+  - name: "時系列の売上動向（実績・前年・目標）"
+    question: "時系列で目標金額、現在の金額、前年の金額を比較して"
+    sql: >
+      SELECT 
+        NNGPP, 
+        SUM(URAG_KNGK) AS URAG_KNGK, 
+        SUM(MKHYU_URAG_KNGK) AS MKHYU_URAG_KNGK, 
+        SUM(ZNNN_URAG_KNGK) AS ZNNN_URAG_KNGK 
+      FROM V_SUMMARY 
+      GROUP BY NNGPP 
+      ORDER BY NNGPP ASC
