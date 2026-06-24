@@ -1,0 +1,38 @@
+{
+  "name": "payoss - 決済明細を開く",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "c2a2f000-0000-4000-8000-000000000001",
+      "name": "手動実行",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://crawler:3000/payoss/meisai",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Internal-Token", "value": "={{ $env.CRAWLER_TOKEN }}" }
+          ]
+        },
+        "options": { "timeout": 60000 }
+      },
+      "id": "c2a2f000-0000-4000-8000-000000000002",
+      "name": "payoss 決済明細",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 0]
+    }
+  ],
+  "connections": {
+    "手動実行": {
+      "main": [[{ "node": "payoss 決済明細", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}

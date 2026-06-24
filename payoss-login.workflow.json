@@ -1,0 +1,41 @@
+{
+  "name": "payoss - ログインテスト",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "b1a1f000-0000-4000-8000-000000000001",
+      "name": "手動実行",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://crawler:3000/payoss/login",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Internal-Token", "value": "={{ $env.CRAWLER_TOKEN }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ user: $env.PAYOSS_USER, pass: $env.PAYOSS_PASS }) }}",
+        "options": { "timeout": 60000 }
+      },
+      "id": "b1a1f000-0000-4000-8000-000000000002",
+      "name": "payoss ログイン",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 0]
+    }
+  ],
+  "connections": {
+    "手動実行": {
+      "main": [[{ "node": "payoss ログイン", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}

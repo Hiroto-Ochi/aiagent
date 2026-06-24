@@ -1,0 +1,77 @@
+{
+  "name": "payoss - 決済明細CSV/PDF取得",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "d3a3f000-0000-4000-8000-000000000001",
+      "name": "手動実行",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f1",
+              "name": "from",
+              "type": "string",
+              "value": "={{ $now.minus({ days: 1 }).toFormat('yyyyLLdd') }}"
+            },
+            {
+              "id": "f2",
+              "name": "to",
+              "type": "string",
+              "value": "={{ $now.minus({ days: 1 }).toFormat('yyyyLLdd') }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d3a3f000-0000-4000-8000-000000000002",
+      "name": "期間を指定(既定=前日)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://crawler:3000/payoss/export",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Internal-Token", "value": "={{ $env.CRAWLER_TOKEN }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ from: $json.from, to: $json.to }) }}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "d3a3f000-0000-4000-8000-000000000003",
+      "name": "payoss 明細取得",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nif (!r.csv_base64) {\n  return [{ json: { message: r.message || 'データなし', period: r.period } }];\n}\nconst csvBuf = Buffer.from(r.csv_base64, 'base64');\n// payoss の CSV は Shift-JIS(CP932)。UTF-8 文字列にして csvText に格納（加工用）\nlet csvText = '';\ntry { csvText = new TextDecoder('shift_jis').decode(csvBuf); } catch (e) { csvText = '(shift_jis decode unavailable: ' + e.message + ')'; }\nconst item = { json: { period: r.period, csv_filename: r.csv_filename, pdf_filename: r.pdf_filename, csvText }, binary: {} };\n// 元ファイル(Shift-JIS)をそのままバイナリ化 → SharePoint/Drive にアップロード可能\nitem.binary.csv = await this.helpers.prepareBinaryData(csvBuf, r.csv_filename, 'text/csv');\nif (r.pdf_base64) {\n  item.binary.pdf = await this.helpers.prepareBinaryData(Buffer.from(r.pdf_base64, 'base64'), r.pdf_filename, 'application/pdf');\n}\nreturn [item];"
+      },
+      "id": "d3a3f000-0000-4000-8000-000000000004",
+      "name": "バイナリ化＋CSVをUTF-8へ",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 0]
+    }
+  ],
+  "connections": {
+    "手動実行": { "main": [[{ "node": "期間を指定(既定=前日)", "type": "main", "index": 0 }]] },
+    "期間を指定(既定=前日)": { "main": [[{ "node": "payoss 明細取得", "type": "main", "index": 0 }]] },
+    "payoss 明細取得": { "main": [[{ "node": "バイナリ化＋CSVをUTF-8へ", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}

@@ -1,0 +1,65 @@
+{
+  "name": "stera - 加盟店精算書取得(PDF/CSV)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "e4a4f000-0000-4000-8000-000000000001",
+      "name": "手動実行",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "y", "name": "year", "type": "string", "value": "={{ $now.minus({ months: 1 }).toFormat('yyyy') }}" },
+            { "id": "m", "name": "month", "type": "string", "value": "={{ $now.minus({ months: 1 }).toFormat('LL') }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "e4a4f000-0000-4000-8000-000000000002",
+      "name": "計上年月(既定=前月)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://crawler:3000/stera/export",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [ { "name": "X-Internal-Token", "value": "={{ $env.CRAWLER_TOKEN }}" } ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ year: $json.year, month: $json.month }) }}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "e4a4f000-0000-4000-8000-000000000003",
+      "name": "stera 精算書取得",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nif (!r.files || !r.files.length) {\n  return [{ json: { message: '該当ファイルがありません', year: r.year, month: r.month } }];\n}\nconst out = [];\nfor (const f of r.files) {\n  const buf = Buffer.from(f.base64, 'base64');\n  const mime = f.type === 'pdf' ? 'application/pdf' : 'text/csv';\n  out.push({\n    json: { year: r.year, month: r.month, kind: f.kind, type: f.type, code: f.code, filename: f.filename, valid: f.valid, bytes: f.bytes },\n    binary: { data: await this.helpers.prepareBinaryData(buf, f.filename, mime) },\n  });\n}\nreturn out;"
+      },
+      "id": "e4a4f000-0000-4000-8000-000000000004",
+      "name": "4ファイルをバイナリ化",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 0]
+    }
+  ],
+  "connections": {
+    "手動実行": { "main": [[{ "node": "計上年月(既定=前月)", "type": "main", "index": 0 }]] },
+    "計上年月(既定=前月)": { "main": [[{ "node": "stera 精算書取得", "type": "main", "index": 0 }]] },
+    "stera 精算書取得": { "main": [[{ "node": "4ファイルをバイナリ化", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}
