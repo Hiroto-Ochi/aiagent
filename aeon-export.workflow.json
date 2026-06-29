@@ -1,0 +1,66 @@
+{
+  "name": "aeon - 加盟店WEB明細 取得(CSV/PDF)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "f5a5f000-0000-4000-8000-000000000001",
+      "name": "手動実行",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "f", "name": "from", "type": "string", "value": "={{ $now.minus({ months: 1 }).startOf('month').toFormat('yyyyLLdd') }}" },
+            { "id": "t", "name": "to", "type": "string", "value": "={{ $now.startOf('month').toFormat('yyyyLLdd') }}" },
+            { "id": "d", "name": "dateField", "type": "string", "value": "07" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "f5a5f000-0000-4000-8000-000000000002",
+      "name": "対象期間(既定=前月/精算日)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://crawler:3000/aeon/export",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [ { "name": "X-Internal-Token", "value": "={{ $env.CRAWLER_TOKEN }}" } ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ from: $json.from, to: $json.to, dateField: $json.dateField }) }}",
+        "options": { "timeout": 180000 }
+      },
+      "id": "f5a5f000-0000-4000-8000-000000000003",
+      "name": "aeon 帳票取得",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nif (!r.files || !r.files.length) {\n  return [{ json: { message: '該当ファイルがありません', from: r.from, to: r.to } }];\n}\nconst out = [];\nfor (const f of r.files) {\n  const buf = Buffer.from(f.base64, 'base64');\n  const mime = f.type === 'pdf' ? 'application/pdf' : 'text/csv';\n  out.push({\n    json: { from: r.from, to: r.to, type: f.type, filename: f.filename, bytes: f.bytes },\n    binary: { data: await this.helpers.prepareBinaryData(buf, f.filename, mime) },\n  });\n}\nreturn out;"
+      },
+      "id": "f5a5f000-0000-4000-8000-000000000004",
+      "name": "ファイルをバイナリ化",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 0]
+    }
+  ],
+  "connections": {
+    "手動実行": { "main": [[{ "node": "対象期間(既定=前月/精算日)", "type": "main", "index": 0 }]] },
+    "対象期間(既定=前月/精算日)": { "main": [[{ "node": "aeon 帳票取得", "type": "main", "index": 0 }]] },
+    "aeon 帳票取得": { "main": [[{ "node": "ファイルをバイナリ化", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}
