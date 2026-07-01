@@ -1,0 +1,64 @@
+{
+  "name": "dpoint - 確定zip取得＆解凍(Excel/PDF)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "a6a6f000-0000-4000-8000-000000000001",
+      "name": "手動実行",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "m", "name": "month", "type": "string", "value": "={{ $now.minus({ months: 1 }).toFormat('yyyyLL') }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a6a6f000-0000-4000-8000-000000000002",
+      "name": "対象月(既定=前月 yyyyMM)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://crawler:3000/dpoint/export",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [ { "name": "X-Internal-Token", "value": "={{ $env.CRAWLER_TOKEN }}" } ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ month: $json.month }) }}",
+        "options": { "timeout": 180000 }
+      },
+      "id": "a6a6f000-0000-4000-8000-000000000003",
+      "name": "dpoint 確定zip取得＆解凍",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nif (!r.files || !r.files.length) {\n  return [{ json: { message: '該当ファイルがありません', month: r.month } }];\n}\nconst out = [];\nfor (const f of r.files) {\n  const buf = Buffer.from(f.base64, 'base64');\n  const mime = f.ext === 'xlsx'\n    ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'\n    : (f.ext === 'pdf' ? 'application/pdf' : 'application/octet-stream');\n  out.push({\n    json: { month: r.month, zip: f.zip, ext: f.ext, filename: f.filename, bytes: f.bytes },\n    binary: { data: await this.helpers.prepareBinaryData(buf, f.filename, mime) },\n  });\n}\nreturn out;"
+      },
+      "id": "a6a6f000-0000-4000-8000-000000000004",
+      "name": "解凍ファイルをバイナリ化",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 0]
+    }
+  ],
+  "connections": {
+    "手動実行": { "main": [[{ "node": "対象月(既定=前月 yyyyMM)", "type": "main", "index": 0 }]] },
+    "対象月(既定=前月 yyyyMM)": { "main": [[{ "node": "dpoint 確定zip取得＆解凍", "type": "main", "index": 0 }]] },
+    "dpoint 確定zip取得＆解凍": { "main": [[{ "node": "解凍ファイルをバイナリ化", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}
