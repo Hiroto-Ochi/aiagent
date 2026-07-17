@@ -1,0 +1,1 @@
+System.RunApplication.RunApplicationAndWaitToComplete ApplicationPath: $'''C:\\Windows\\System32\\curl.exe''' CommandLineArguments: 引数 WorkingDirectory: $'''C:\\Users\\01047477\\Downloads''' WindowStyle: System.ProcessWindowStyle.Normal Timeout: 0 ProcessId=> AppProcessId ExitCode=> AppExitCode
