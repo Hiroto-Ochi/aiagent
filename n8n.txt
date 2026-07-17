@@ -1,0 +1,51 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "smbc-intake",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "a5af9326-0dbe-4480-ba65-45726c5a77e9",
+      "name": "SMBC受信 (Webhook)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        592,
+        -160
+      ],
+      "webhookId": "smbc-intake-hook"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first();\nconst binIn = item.binary || {};\nconst out = { json: { ok: true, contentType: (item.json.headers || {})['content-type'], received: [] }, binary: {} };\n\nfor (const key of Object.keys(binIn)) {\n  const meta = binIn[key];\n  const buf = await this.helpers.getBinaryDataBuffer(0, key);\n  const name = meta.fileName || key;\n  const isCsv = /\\.csv$/i.test(name) || String(meta.mimeType || '').includes('csv');\n  const isPdf = /\\.pdf$/i.test(name) || String(meta.mimeType || '').includes('pdf');\n  const entry = { field: key, filename: name, mimeType: meta.mimeType, bytes: buf.length };\n  if (isCsv) {\n    let text = '';\n    try { text = new TextDecoder('shift_jis').decode(buf); } catch (e) { text = '(decode error: ' + e.message + ')'; }\n    const lines = text.split(/\\r?\\n/).filter((l) => l.length);\n    entry.decoded = 'shift_jis -> utf-8';\n    entry.rows = lines.length;\n    entry.header = lines[0] || '';\n    entry.preview = lines.slice(0, 3);\n    out.binary.csv = await this.helpers.prepareBinaryData(buf, name, 'text/csv');\n  } else if (isPdf) {\n    out.binary.pdf = await this.helpers.prepareBinaryData(buf, name, 'application/pdf');\n  } else {\n    out.binary[key] = await this.helpers.prepareBinaryData(buf, name, meta.mimeType || 'application/octet-stream');\n  }\n  out.json.received.push(entry);\n}\nif (out.json.received.length === 0) {\n  out.json.ok = false;\n  out.json.error = 'no binary files received (check curl -F field names / Content-Type)';\n}\nreturn [out];"
+      },
+      "id": "fc927f36-ae73-486a-b7fe-b6b47f567548",
+      "name": "受信ファイルを取得(CSVはSJIS→UTF-8)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        832,
+        -160
+      ]
+    }
+  ],
+  "connections": {
+    "SMBC受信 (Webhook)": {
+      "main": [
+        [
+          {
+            "node": "受信ファイルを取得(CSVはSJIS→UTF-8)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "dee1a47e4e9e801c56245fc8ee68d17b81415bc16b23d0340f4172a876ae9a34"
+  }
+}
