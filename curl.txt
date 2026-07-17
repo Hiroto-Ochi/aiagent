@@ -1,0 +1,1 @@
+-sS -o "C:\Users\01047477\Downloads\resp.json" -w "%{http_code}" -X POST -H "X-Webhook-Token: %WebhookToken%" -F "csv=@C:\Users\01047477\Downloads\20260630.csv;type=text/csv" -F "pdf=@C:\Users\01047477\Downloads\印刷用ページ.pdf;type=application/pdf" https://d3cg0otnp6cnu4.cloudfront.net/webhook/smbc-intake
