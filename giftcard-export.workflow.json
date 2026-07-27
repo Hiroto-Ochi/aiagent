@@ -1,0 +1,71 @@
+{
+  "name": "giftcard - トランザクションCSV 月次一括取得",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "e5b1a000-0000-4000-8000-000000000001",
+      "name": "手動実行",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "m1",
+              "name": "month",
+              "type": "string",
+              "value": "={{ $now.minus({ months: 1 }).toFormat('yyyyLL') }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "e5b1a000-0000-4000-8000-000000000002",
+      "name": "対象月を指定(既定=前月 YYYYMM)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://crawler:3000/giftcard/export",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Internal-Token", "value": "={{ $env.CRAWLER_TOKEN }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ month: $json.month }) }}",
+        "options": { "timeout": 240000 }
+      },
+      "id": "e5b1a000-0000-4000-8000-000000000003",
+      "name": "giftcard 月次取得",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nif (!r.files || r.files.length === 0) {\n  return [{ json: { ok: false, month: r.month, message: r.message || 'データなし' } }];\n}\nconst out = [];\nfor (const f of r.files) {\n  if (!f.base64) { out.push({ json: { zip: f.zip, error: f.error || 'no data' } }); continue; }\n  const buf = Buffer.from(f.base64, 'base64');\n  // giftcard のCSVは Shift-JIS(MS932)。先頭行のみUTF-8化してプレビュー表示（全文は必要時に）\n  let header = '';\n  try { header = new TextDecoder('shift_jis').decode(buf).split(/\\r?\\n/)[0].slice(0, 200); } catch (e) { header = '(decode err: ' + e.message + ')'; }\n  const item = { json: { month: r.month, zip: f.zip, filename: f.filename, bytes: f.bytes, header }, binary: {} };\n  // 元CSV(Shift-JIS)をそのままバイナリ化 → SharePoint等へアップロード可能\n  item.binary.csv = await this.helpers.prepareBinaryData(buf, f.filename, 'text/csv');\n  out.push(item);\n}\nreturn out;"
+      },
+      "id": "e5b1a000-0000-4000-8000-000000000004",
+      "name": "CSVをバイナリ化(30日分)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 0]
+    }
+  ],
+  "connections": {
+    "手動実行": { "main": [[{ "node": "対象月を指定(既定=前月 YYYYMM)", "type": "main", "index": 0 }]] },
+    "対象月を指定(既定=前月 YYYYMM)": { "main": [[{ "node": "giftcard 月次取得", "type": "main", "index": 0 }]] },
+    "giftcard 月次取得": { "main": [[{ "node": "CSVをバイナリ化(30日分)", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}
